@@ -1,0 +1,46 @@
+{
+  "name": "batawil-hrms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BATAWIL HRMS - Phase 1 secure foundation (API, database, auth, RBAC)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "tsx watch server/src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server/src/index.js",
+    "migrate": "tsx server/src/cli/migrate.ts",
+    "migrate:prod": "node dist/server/src/cli/migrate.js",
+    "setup": "tsx server/src/cli/setup-admin.ts",
+    "setup:prod": "node dist/server/src/cli/setup-admin.js",
+    "reset-admin": "tsx server/src/cli/reset-admin.ts",
+    "reset-admin:prod": "node dist/server/src/cli/reset-admin.js",
+    "seed:demo": "tsx server/src/cli/demo-seed.ts",
+    "export:data": "tsx server/src/cli/export-data.ts",
+    "import:data": "tsx server/src/cli/import-data.ts",
+    "cleanup:demo": "tsx server/src/cli/production-cleanup.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test --test-concurrency=1 server/tests/api.test.ts server/tests/security.test.ts server/tests/hr.test.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "cookie-parser": "^1.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^5.3.0",
+    "helmet": "^8.3.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

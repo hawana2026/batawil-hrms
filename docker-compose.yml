@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: batawil
+      POSTGRES_USER: batawil
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the compose env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U batawil -d batawil"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "3000"
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+      DB_DRIVER: postgres
+      DATABASE_URL: postgres://batawil:${POSTGRES_PASSWORD}@db:5432/batawil
+      DATABASE_SSL: disable
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_FULL_NAME: ${ADMIN_FULL_NAME:-مدير النظام}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:

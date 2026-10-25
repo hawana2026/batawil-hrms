@@ -1,0 +1,30 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:3000 {
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

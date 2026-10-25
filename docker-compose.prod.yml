@@ -1,0 +1,114 @@
+name: batawil-hrms
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: batawil
+      POSTGRES_USER: batawil
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+      TZ: ${TZ:-Asia/Aden}
+    command:
+      - postgres
+      - -c
+      - max_connections=50
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - timezone=${TZ:-Asia/Aden}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U batawil -d batawil"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    shm_size: 256mb
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - db_net
+
+  app:
+    build: .
+    image: batawil-hrms-app:latest
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      PUBLIC_ORIGIN: https://${SITE_DOMAIN:?set SITE_DOMAIN in .env.production}
+      DB_DRIVER: postgres
+      DATABASE_URL: postgres://batawil:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@db:5432/batawil
+      DATABASE_SSL: disable
+      TRUST_PROXY: "1"
+      TZ: ${TZ:-Asia/Aden}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-45}
+      SESSION_ABSOLUTE_HOURS: ${SESSION_ABSOLUTE_HOURS:-12}
+      SESSION_REMEMBER_DAYS: ${SESSION_REMEMBER_DAYS:-7}
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - edge_net
+      - db_net
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - edge_net
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge_net:
+  db_net:
+    internal: true

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.data/
+.env
+.env.*
+!.env.example
+!.env.docker.example
+!.env.production.example
+*.log
+coverage/
+.DS_Store
+prototype/
