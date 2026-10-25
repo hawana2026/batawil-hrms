@@ -18,6 +18,7 @@
     "reset-admin": "tsx server/src/cli/reset-admin.ts",
     "reset-admin:prod": "node dist/server/src/cli/reset-admin.js",
     "seed:demo": "tsx server/src/cli/demo-seed.ts",
+    "seed:demo-data": "tsx server/src/cli/demo-data.ts",
     "export:data": "tsx server/src/cli/export-data.ts",
     "import:data": "tsx server/src/cli/import-data.ts",
     "cleanup:demo": "tsx server/src/cli/production-cleanup.ts",
