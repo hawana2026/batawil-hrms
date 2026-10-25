@@ -3,7 +3,7 @@ services:
     name: batawil-hrms-demo-67236
     runtime: docker
     plan: free
-    region: frankfurt
+    region: virginia
     healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV
@@ -14,8 +14,6 @@ services:
         value: require
       - key: DATABASE_URL
         sync: false
-      - key: PUBLIC_ORIGIN
-        value: https://batawil-hrms-demo-67236.onrender.com
       - key: TRUST_PROXY
         value: "1"
       - key: TZ

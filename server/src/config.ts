@@ -41,7 +41,7 @@ export interface AppConfig {
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  PUBLIC_ORIGIN: z.string().url().default("http://localhost:3000"),
+  PUBLIC_ORIGIN: z.string().url().optional(),
   DB_DRIVER: z.enum(["pglite", "postgres"]).default("pglite"),
   PGLITE_DIR: z.string().default("./.data/pglite"),
   DATABASE_URL: z.string().optional(),
@@ -81,11 +81,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (value.DB_DRIVER === "postgres" && !value.DATABASE_URL) {
     throw new Error("DATABASE_URL مطلوب عند استخدام DB_DRIVER=postgres.");
   }
-  if (isProduction && !value.PUBLIC_ORIGIN.startsWith("https://")) {
-    throw new Error("PUBLIC_ORIGIN يجب أن يبدأ بـ https:// في بيئة الإنتاج.");
+  const fallbackOrigin = env.RENDER_EXTERNAL_URL?.trim() || "http://localhost:3000";
+  const publicUrl = new URL(value.PUBLIC_ORIGIN ?? fallbackOrigin);
+  if (isProduction && publicUrl.protocol !== "https:") {
+    throw new Error("يجب أن يكون عنوان الموقع العام (PUBLIC_ORIGIN أو RENDER_EXTERNAL_URL) https:// في بيئة الإنتاج.");
   }
-
-  const publicUrl = new URL(value.PUBLIC_ORIGIN);
   const allowedOrigins = new Set<string>([publicUrl.origin]);
   if (!isProduction) {
     const port = value.PORT;
