@@ -15,6 +15,7 @@ export interface AppConfig {
     driver: "pglite" | "postgres";
     pgliteDir: string;
     databaseUrl: string | null;
+    schema: string | null;
     ssl: "disable" | "require" | "no-verify";
   };
   session: {
@@ -45,6 +46,7 @@ const envSchema = z.object({
   DB_DRIVER: z.enum(["pglite", "postgres"]).default("pglite"),
   PGLITE_DIR: z.string().default("./.data/pglite"),
   DATABASE_URL: z.string().optional(),
+  DATABASE_SCHEMA: z.string().optional(),
   DATABASE_SSL: z.enum(["disable", "require", "no-verify"]).default("disable"),
   SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(1440).default(45),
   SESSION_ABSOLUTE_HOURS: z.coerce.number().int().min(1).max(720).default(12),
@@ -81,6 +83,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (value.DB_DRIVER === "postgres" && !value.DATABASE_URL) {
     throw new Error("DATABASE_URL مطلوب عند استخدام DB_DRIVER=postgres.");
   }
+  const databaseSchema = value.DATABASE_SCHEMA?.trim() || null;
+  if (databaseSchema && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(databaseSchema)) {
+    throw new Error("DATABASE_SCHEMA يجب أن يكون اسم Schema صالحًا بالأحرف اللاتينية والأرقام والشرطة السفلية.");
+  }
   const fallbackOrigin = env.RENDER_EXTERNAL_URL?.trim() || "http://localhost:3000";
   const publicUrl = new URL(value.PUBLIC_ORIGIN ?? fallbackOrigin);
   if (isProduction && publicUrl.protocol !== "https:") {
@@ -105,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       driver: value.DB_DRIVER,
       pgliteDir: value.PGLITE_DIR,
       databaseUrl: value.DATABASE_URL ?? null,
+      schema: databaseSchema,
       ssl: value.DATABASE_SSL,
     },
     session: {

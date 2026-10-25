@@ -71,6 +71,7 @@ export async function createDb(config: AppConfig["db"], logger: Logger): Promise
   const pool = new Pool({
     connectionString: config.databaseUrl,
     ssl: pgSslConfig(config.ssl),
+    options: config.schema ? `-c search_path=${config.schema}` : undefined,
     max: 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,

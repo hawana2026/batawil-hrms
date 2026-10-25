@@ -14,6 +14,8 @@ services:
         value: require
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_SCHEMA
+        value: batawil_demo
       - key: TRUST_PROXY
         value: "1"
       - key: TZ
