@@ -38,6 +38,7 @@ export const moneySchema = z.coerce.number().min(0, "المبلغ يجب ألا 
 
 const personName = z.string().trim().min(2, "الاسم مطلوب.").max(120, "الاسم طويل جداً.");
 const notesSchema = z.string().trim().max(2000, "الملاحظات طويلة جداً.").default("");
+const optionalId = z.union([z.uuid("المعرّف غير صالح."), z.literal("")]).transform((value) => value || null).optional();
 
 export const createEmployeeSchema = z.object({
   employeeNo: employeeNoSchema,
@@ -47,6 +48,8 @@ export const createEmployeeSchema = z.object({
   branchId: z.uuid("يجب اختيار فرع صالح."),
   departmentId: z.union([z.uuid("معرّف قسم غير صالح."), z.literal("")]).transform((value) => value || null).optional(),
   jobTitle: z.string().trim().max(120).default(""),
+  jobTitleId: optionalId,
+  managerId: optionalId,
   hireDate: isoDateSchema,
   baseSalary: moneySchema.default(0),
   status: employeeStatusSchema.default("active"),
@@ -61,12 +64,54 @@ export const updateEmployeeSchema = z.object({
   branchId: z.uuid("يجب اختيار فرع صالح.").optional(),
   departmentId: z.union([z.uuid("معرّف قسم غير صالح."), z.literal("")]).transform((value) => value || null).optional(),
   jobTitle: z.string().trim().max(120).optional(),
+  jobTitleId: optionalId,
+  managerId: optionalId,
   hireDate: isoDateSchema.optional(),
   baseSalary: moneySchema.optional(),
   status: employeeStatusSchema.optional(),
   notes: z.string().trim().max(2000).optional(),
   terminationDate: z.union([z.literal(""), isoDateSchema]).transform((value) => value || null).optional(),
   terminationReason: z.string().trim().max(500).optional(),
+});
+
+export const jobTitleSchema = z.object({
+  name: z.string().trim().min(2, "اسم المسمى الوظيفي مطلوب.").max(120),
+  departmentId: optionalId,
+  active: z.boolean().default(true),
+});
+
+export const jobTitleUpdateSchema = z.object({
+  name: z.string().trim().min(2, "اسم المسمى الوظيفي مطلوب.").max(120).optional(),
+  departmentId: optionalId,
+  active: z.boolean().optional(),
+});
+
+const contractTypeSchema = z.enum(["permanent", "fixed", "probation", "part_time"]);
+const contractStatusSchema = z.enum(["active", "ended", "terminated"]);
+
+export const contractSchema = z
+  .object({
+    contractNo: z.string().trim().max(60, "رقم العقد طويل جداً.").default(""),
+    contractType: contractTypeSchema.default("permanent"),
+    startDate: isoDateSchema,
+    endDate: z.union([z.literal(""), isoDateSchema]).transform((value) => value || null).default(null),
+    baseSalary: moneySchema.default(0),
+    status: contractStatusSchema.default("active"),
+    notes: notesSchema,
+  })
+  .refine((data) => !data.endDate || data.endDate >= data.startDate, {
+    message: "تاريخ نهاية العقد يجب ألا يسبق بدايته.",
+    path: ["endDate"],
+  });
+
+export const contractUpdateSchema = z.object({
+  contractNo: z.string().trim().max(60, "رقم العقد طويل جداً.").optional(),
+  contractType: contractTypeSchema.optional(),
+  startDate: isoDateSchema.optional(),
+  endDate: z.union([z.literal(""), isoDateSchema]).transform((value) => value || null).optional(),
+  baseSalary: moneySchema.optional(),
+  status: contractStatusSchema.optional(),
+  notes: z.string().trim().max(2000).optional(),
 });
 
 export const archiveEmployeeSchema = z.object({

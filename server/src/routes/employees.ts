@@ -5,6 +5,8 @@ import type { Row } from "../db/index.js";
 import { addDataSheet, createWorkbook, sendWorkbook } from "../lib/xlsx.js";
 import {
   archiveEmployeeSchema,
+  contractSchema,
+  contractUpdateSchema,
   createEmployeeSchema,
   employeeImportRowSchema,
   updateEmployeeSchema,
@@ -17,11 +19,18 @@ import {
   applyDueTransfers,
   assertBranchUsable,
   assertDepartmentUsable,
+  assertJobTitleUsable,
+  assertManagerUsable,
   assertUniqueEmployeeIdentity,
+  loadContract,
+  loadContracts,
   loadEmployee,
   nextEmployeeNo,
+  presentContract,
   presentEmployee,
   toDateOnly,
+  today,
+  writeEmployeeHistory,
   type EmployeeRow,
 } from "../services/employees.js";
 import {
@@ -199,12 +208,14 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       `SELECT e.id, e.employee_no, e.full_name, e.phone, e.national_id,
               e.branch_id, b.name AS branch_name, b.code AS branch_code,
               e.department_id, d.name AS department_name,
-              e.job_title, e.hire_date, e.base_salary, e.status, e.notes,
+              e.job_title, e.job_title_id, e.manager_id, m.full_name AS manager_name, m.employee_no AS manager_no,
+              e.hire_date, e.base_salary, e.status, e.notes,
               e.termination_date, e.termination_reason, e.archived_at, e.archive_reason,
               e.created_at, e.updated_at
        FROM employees e
        JOIN branches b ON b.id = e.branch_id
        LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN employees m ON m.id = e.manager_id
        WHERE ${where.join(" AND ")}
        ORDER BY e.archived_at NULLS FIRST, e.full_name ASC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -347,12 +358,16 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       throw new ApiError(400, "TOO_MANY_ROWS", "الحد الأقصى للاستيراد 500 صف في المرة الواحدة.");
     }
 
-    const [branches, departments] = await Promise.all([
+    const [branches, departments, jobTitles] = await Promise.all([
       db.query<Row & { id: string; code: string; active: boolean }>("SELECT id, code, active FROM branches"),
       db.query<Row & { id: string; name: string; active: boolean }>("SELECT id, name, active FROM departments"),
+      db.query<Row & { id: string; name: string; active: boolean }>(
+        "SELECT id, name, active FROM job_titles ORDER BY active DESC, name",
+      ),
     ]);
     const branchByCode = new Map(branches.rows.map((row) => [row.code.trim().toUpperCase(), row]));
     const departmentByName = new Map(departments.rows.map((row) => [row.name.trim().toLowerCase(), row]));
+    const jobTitleByName = new Map(jobTitles.rows.map((row) => [row.name.trim().toLowerCase(), row]));
 
     interface Prepared {
       rowNumber: number;
@@ -363,6 +378,7 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       branchId: string;
       departmentId: string | null;
       jobTitle: string;
+      jobTitleId: string | null;
       hireDate: string;
       baseSalary: number;
       status: string;
@@ -443,6 +459,7 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
         branchId: branch.id,
         departmentId,
         jobTitle: data.jobTitle,
+        jobTitleId: data.jobTitle ? (jobTitleByName.get(data.jobTitle.trim().toLowerCase())?.id ?? null) : null,
         hireDate: data.hireDate,
         baseSalary: data.baseSalary,
         status: data.status,
@@ -486,10 +503,19 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
         const id = newId();
         await tx.query(
           `INSERT INTO employees
-            (id, employee_no, full_name, phone, national_id, branch_id, department_id, job_title, hire_date, base_salary, status, notes, created_by, updated_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)`,
-          [id, employeeNo, row.fullName, row.phone, row.nationalId, row.branchId, row.departmentId, row.jobTitle, row.hireDate, row.baseSalary, row.status, row.notes, actor.id],
+            (id, employee_no, full_name, phone, national_id, branch_id, department_id, job_title, job_title_id,
+             hire_date, base_salary, status, notes, created_by, updated_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`,
+          [id, employeeNo, row.fullName, row.phone, row.nationalId, row.branchId, row.departmentId, row.jobTitle, row.jobTitleId, row.hireDate, row.baseSalary, row.status, row.notes, actor.id],
         );
+        await writeEmployeeHistory(tx, {
+          employeeId: id,
+          changeType: "hired",
+          summary: `استيراد تعيين ${row.fullName}${row.jobTitle ? ` — ${row.jobTitle}` : ""}`,
+          details: { employeeNo, source: "import", branchId: row.branchId, departmentId: row.departmentId, jobTitle: row.jobTitle || null, baseSalary: row.baseSalary, status: row.status },
+          effectiveDate: row.hireDate,
+          actorId: actor.id,
+        });
         inserted.push({ id, employeeNo });
       }
       return inserted;
@@ -513,19 +539,39 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
     const id = z.uuid("معرّف موظف غير صالح.").parse(req.params.id);
     const employee = await loadEmployee(db, id);
     if (!canAccessBranch(req.auth.user, employee.branch_id)) throw notFound("الموظف غير موجود أو خارج نطاق صلاحيتك.");
-    const transfers = await db.query<Row & { id: string; from_branch_name: string; to_branch_name: string; from_department_name: string | null; to_department_name: string | null; effective_date: string; reason: string; status: string; approved_at: string | Date | null; applied_at: string | Date | null }>(
-      `SELECT t.id, fb.name AS from_branch_name, tb.name AS to_branch_name,
-              fd.name AS from_department_name, td.name AS to_department_name,
-              t.effective_date::text AS effective_date, t.reason, t.status, t.approved_at, t.applied_at
-       FROM employee_transfers t
-       JOIN branches fb ON fb.id = t.from_branch_id
-       JOIN branches tb ON tb.id = t.to_branch_id
-       LEFT JOIN departments fd ON fd.id = t.from_department_id
-       LEFT JOIN departments td ON td.id = t.to_department_id
-       WHERE t.employee_id = $1
-       ORDER BY t.created_at DESC`,
-      [id],
-    );
+    const [transfers, contracts, documents, history] = await Promise.all([
+      db.query<Row & { id: string; from_branch_name: string; to_branch_name: string; from_department_name: string | null; to_department_name: string | null; effective_date: string; reason: string; status: string; approved_at: string | Date | null; applied_at: string | Date | null }>(
+        `SELECT t.id, fb.name AS from_branch_name, tb.name AS to_branch_name,
+                fd.name AS from_department_name, td.name AS to_department_name,
+                t.effective_date::text AS effective_date, t.reason, t.status, t.approved_at, t.applied_at
+         FROM employee_transfers t
+         JOIN branches fb ON fb.id = t.from_branch_id
+         JOIN branches tb ON tb.id = t.to_branch_id
+         LEFT JOIN departments fd ON fd.id = t.from_department_id
+         LEFT JOIN departments td ON td.id = t.to_department_id
+         WHERE t.employee_id = $1
+         ORDER BY t.created_at DESC`,
+        [id],
+      ),
+      loadContracts(db, id),
+      db.query<Row & { id: string; file_name: string; mime_type: string; size_bytes: number; title: string; document_type: string; expires_at: string | null; uploaded_by_name: string | null; created_at: string | Date }>(
+        `SELECT a.id, a.file_name, a.mime_type, a.size_bytes, a.title, a.document_type, a.expires_at::text AS expires_at,
+                u.full_name AS uploaded_by_name, a.created_at
+         FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+         WHERE a.owner_type = 'employee' AND a.owner_id = $1
+         ORDER BY a.created_at DESC`,
+        [id],
+      ),
+      db.query<Row & { id: string; change_type: string; summary: string; details: unknown; effective_date: string | null; created_by_name: string | null; created_at: string | Date }>(
+        `SELECT h.id, h.change_type, h.summary, h.details, h.effective_date::text AS effective_date,
+                u.full_name AS created_by_name, h.created_at
+         FROM employee_history h LEFT JOIN users u ON u.id = h.created_by
+         WHERE h.employee_id = $1
+         ORDER BY h.created_at DESC
+         LIMIT 200`,
+        [id],
+      ),
+    ]);
     res.json({
       employee: presentEmployee(employee),
       transfers: transfers.rows.map((row) => ({
@@ -540,6 +586,28 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
         approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : null,
         appliedAt: row.applied_at ? new Date(row.applied_at).toISOString() : null,
       })),
+      contracts: contracts.map(presentContract),
+      documents: documents.rows.map((row) => ({
+        id: row.id,
+        fileName: row.file_name,
+        mimeType: row.mime_type,
+        sizeBytes: row.size_bytes,
+        title: row.title,
+        documentType: row.document_type,
+        expiresAt: row.expires_at,
+        uploadedBy: row.uploaded_by_name,
+        createdAt: new Date(row.created_at).toISOString(),
+        downloadUrl: `/api/attachments/${row.id}/download`,
+      })),
+      history: history.rows.map((row) => ({
+        id: row.id,
+        changeType: row.change_type,
+        summary: row.summary,
+        details: row.details && typeof row.details === "object" ? row.details : {},
+        effectiveDate: row.effective_date,
+        createdBy: row.created_by_name,
+        createdAt: new Date(row.created_at).toISOString(),
+      })),
     });
   });
 
@@ -549,15 +617,51 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
     const input = parseBody(createEmployeeSchema, req.body);
     await assertBranchUsable(db, actor, input.branchId);
     await assertDepartmentUsable(db, input.departmentId ?? null);
+    const jobTitleName = await assertJobTitleUsable(db, input.jobTitleId ?? null);
+    await assertManagerUsable(db, input.managerId ?? null, input.branchId, null);
     const employeeNo = input.employeeNo ?? (await nextEmployeeNo(db));
     await assertUniqueEmployeeIdentity(db, employeeNo, input.nationalId ?? null, null);
     const id = newId();
+    const jobTitle = jobTitleName || input.jobTitle;
     await db.query(
       `INSERT INTO employees
-        (id, employee_no, full_name, phone, national_id, branch_id, department_id, job_title, hire_date, base_salary, status, notes, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)`,
-      [id, employeeNo, input.fullName, input.phone, input.nationalId ?? null, input.branchId, input.departmentId ?? null, input.jobTitle, input.hireDate, input.baseSalary, input.status, input.notes, actor.id],
+        (id, employee_no, full_name, phone, national_id, branch_id, department_id, job_title, job_title_id, manager_id,
+         hire_date, base_salary, status, notes, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
+      [
+        id,
+        employeeNo,
+        input.fullName,
+        input.phone,
+        input.nationalId ?? null,
+        input.branchId,
+        input.departmentId ?? null,
+        jobTitle,
+        input.jobTitleId ?? null,
+        input.managerId ?? null,
+        input.hireDate,
+        input.baseSalary,
+        input.status,
+        input.notes,
+        actor.id,
+      ],
     );
+    await writeEmployeeHistory(db, {
+      employeeId: id,
+      changeType: "hired",
+      summary: `تعيين ${input.fullName}${jobTitle ? ` — ${jobTitle}` : ""}`,
+      details: {
+        employeeNo,
+        branchId: input.branchId,
+        departmentId: input.departmentId ?? null,
+        jobTitle: jobTitle || null,
+        managerId: input.managerId ?? null,
+        baseSalary: input.baseSalary,
+        status: input.status,
+      },
+      effectiveDate: input.hireDate,
+      actorId: actor.id,
+    });
     const employee = await loadEmployee(db, id);
     await writeAudit(db, logger, {
       action: "employee.created",
@@ -589,6 +693,22 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
     const nationalId = input.nationalId !== undefined ? (input.nationalId ?? null) : current.national_id;
     await assertUniqueEmployeeIdentity(db, employeeNo, nationalId, id);
 
+    let jobTitleId = current.job_title_id;
+    let jobTitle = current.job_title;
+    if (input.jobTitleId !== undefined) {
+      jobTitleId = input.jobTitleId ?? null;
+      jobTitle =
+        jobTitleId === current.job_title_id ? current.job_title : await assertJobTitleUsable(db, jobTitleId);
+    } else if (input.jobTitle !== undefined) {
+      jobTitleId = null;
+      jobTitle = input.jobTitle;
+    }
+    const managerId = input.managerId !== undefined ? (input.managerId ?? null) : current.manager_id;
+    const managerName =
+      managerId === current.manager_id
+        ? (current.manager_name ?? "")
+        : await assertManagerUsable(db, managerId, current.branch_id, id);
+
     const changes: Record<string, { from: unknown; to: unknown }> = {};
     const next = {
       employee_no: employeeNo,
@@ -596,7 +716,9 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       phone: input.phone ?? current.phone,
       national_id: nationalId,
       department_id: input.departmentId !== undefined ? (input.departmentId ?? null) : current.department_id,
-      job_title: input.jobTitle ?? current.job_title,
+      job_title: jobTitle,
+      job_title_id: jobTitleId,
+      manager_id: managerId,
       hire_date: input.hireDate ?? toDateOnly(current.hire_date),
       base_salary: input.baseSalary ?? Number(current.base_salary),
       status: input.status ?? current.status,
@@ -611,6 +733,8 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       national_id: "الرقم الوطني",
       department_id: "القسم",
       job_title: "المسمى الوظيفي",
+      job_title_id: "ربط المسمى الوظيفي",
+      manager_id: "المدير المباشر",
       hire_date: "تاريخ التعيين",
       base_salary: "الراتب الأساسي",
       status: "الحالة",
@@ -621,17 +745,39 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
     for (const key of Object.keys(next) as Array<keyof typeof next>) {
       const before = current[key] as unknown;
       if (String(before ?? "") !== String(next[key] ?? "")) {
-        changes[labels[key] ?? key] = { from: before, to: next[key] };
+        if (key === "manager_id") {
+          changes[labels[key] ?? key] = { from: current.manager_name ?? "—", to: managerName || "—" };
+          continue;
+        }
+        if (key === "job_title_id") {
+          changes[labels[key] ?? key] = {
+            from: current.job_title_id ? current.job_title : "—",
+            to: next.job_title_id ? next.job_title || "—" : "—",
+          };
+          continue;
+        }
+        changes[labels[key] ?? key] = { from: before ?? "—", to: next[key] ?? "—" };
       }
     }
     if (Object.keys(changes).length === 0) throw new ApiError(400, "NO_CHANGES", "لا توجد تغييرات لحفظها.");
     await db.query(
       `UPDATE employees SET employee_no=$2, full_name=$3, phone=$4, national_id=$5, department_id=$6,
-         job_title=$7, hire_date=$8, base_salary=$9, status=$10, notes=$11,
-         termination_date=$12, termination_reason=$13, updated_by=$14, updated_at=now()
+         job_title=$7, job_title_id=$8, manager_id=$9, hire_date=$10, base_salary=$11, status=$12, notes=$13,
+         termination_date=$14, termination_reason=$15, updated_by=$16, updated_at=now()
        WHERE id=$1`,
-      [id, next.employee_no, next.full_name, next.phone, next.national_id, next.department_id, next.job_title, next.hire_date, next.base_salary, next.status, next.notes, next.termination_date, next.termination_reason, actor.id],
+      [id, next.employee_no, next.full_name, next.phone, next.national_id, next.department_id, next.job_title, next.job_title_id, next.manager_id, next.hire_date, next.base_salary, next.status, next.notes, next.termination_date, next.termination_reason, actor.id],
     );
+    const salaryChanged = Number(next.base_salary) !== Number(current.base_salary);
+    const statusChanged = next.status !== current.status;
+    const changedLabels = Object.keys(changes);
+    await writeEmployeeHistory(db, {
+      employeeId: id,
+      changeType: salaryChanged ? "salary_changed" : statusChanged ? "status_changed" : "updated",
+      summary: `تعديل بيانات ${next.full_name}: ${changedLabels.slice(0, 6).join("، ")}${changedLabels.length > 6 ? "…" : ""}`,
+      details: { changes, employeeNo },
+      effectiveDate: today(),
+      actorId: actor.id,
+    });
     await writeAudit(db, logger, {
       action: "employee.updated",
       actor: { id: actor.id, username: actor.username },
@@ -655,13 +801,32 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
     const current = await loadEmployee(db, id);
     if (!canAccessBranch(actor, current.branch_id)) throw notFound("الموظف غير موجود أو خارج نطاق صلاحيتك.");
     if (current.archived_at) throw conflict("الموظف مؤرشف مسبقاً.");
-    await db.query(
-      `UPDATE employees SET archived_at = now(), archive_reason = $2, termination_date = COALESCE($3::date, CURRENT_DATE),
-         termination_reason = COALESCE(termination_reason, $2), status = CASE WHEN status = 'resigned' THEN status ELSE 'resigned' END,
-         updated_by = $4, updated_at = now()
-       WHERE id = $1`,
-      [id, input.reason, input.terminationDate || null, actor.id],
-    );
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `UPDATE employees SET archived_at = now(), archive_reason = $2, termination_date = COALESCE($3::date, CURRENT_DATE),
+           termination_reason = COALESCE(termination_reason, $2), status = CASE WHEN status = 'resigned' THEN status ELSE 'resigned' END,
+           updated_by = $4, updated_at = now()
+         WHERE id = $1`,
+        [id, input.reason, input.terminationDate || null, actor.id],
+      );
+      await tx.query(
+        `UPDATE employee_contracts SET status = 'ended', updated_by = $2, updated_at = now()
+         WHERE employee_id = $1 AND status = 'active'`,
+        [id, actor.id],
+      );
+      await writeEmployeeHistory(tx, {
+        employeeId: id,
+        changeType: "archived",
+        summary: `أرشفة الخدمة — ${input.reason}`,
+        details: {
+          reason: input.reason,
+          terminationDate: input.terminationDate || today(),
+          employeeNo: current.employee_no,
+        },
+        effectiveDate: input.terminationDate || today(),
+        actorId: actor.id,
+      });
+    });
     await writeAudit(db, logger, {
       action: "employee.archived",
       actor: { id: actor.id, username: actor.username },
@@ -674,6 +839,188 @@ export function createEmployeesRouter(deps: AuthDeps): Router {
       userAgent: requestUserAgent(req),
     });
     res.json({ ok: true });
+  });
+
+  const CONTRACT_TYPES_AR: Record<string, string> = {
+    permanent: "دائم",
+    fixed: "محدد المدة",
+    probation: "تحت التجربة",
+    part_time: "دوام جزئي",
+  };
+  const CONTRACT_STATUS_AR: Record<string, string> = {
+    active: "نشط",
+    ended: "منتهٍ",
+    terminated: "ملغي",
+  };
+
+  router.post("/:id/contracts", requireManage, async (req, res) => {
+    if (!req.auth) throw unauthorized();
+    const actor = req.auth.user;
+    const id = z.uuid("معرّف موظف غير صالح.").parse(req.params.id);
+    const input = parseBody(contractSchema, req.body);
+    const current = await loadEmployee(db, id);
+    if (!canAccessBranch(actor, current.branch_id)) throw notFound("الموظف غير موجود أو خارج نطاق صلاحيتك.");
+    if (current.archived_at) throw new ApiError(400, "EMPLOYEE_ARCHIVED", "الموظف مؤرشف ولا يمكن إضافة عقود له.");
+    if (input.status === "active") {
+      const active = await db.query<Row & { contract_no: string }>(
+        "SELECT contract_no FROM employee_contracts WHERE employee_id = $1 AND status = 'active' LIMIT 1",
+        [id],
+      );
+      if (active.rows[0]) {
+        throw conflict(`يوجد عقد نشط بالفعل${active.rows[0].contract_no ? ` (${active.rows[0].contract_no})` : ""}. أنهِ العقد الحالي أولاً.`);
+      }
+    }
+    const contractId = newId();
+    const salaryChanged = input.status === "active" && Number(input.baseSalary) !== Number(current.base_salary);
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO employee_contracts
+          (id, employee_id, contract_no, contract_type, start_date, end_date, base_salary, status, notes, created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`,
+        [
+          contractId,
+          id,
+          input.contractNo || "",
+          input.contractType,
+          input.startDate,
+          input.endDate ?? null,
+          input.baseSalary,
+          input.status,
+          input.notes,
+          actor.id,
+        ],
+      );
+      if (salaryChanged) {
+        await tx.query("UPDATE employees SET base_salary = $2, updated_by = $3, updated_at = now() WHERE id = $1", [
+          id,
+          input.baseSalary,
+          actor.id,
+        ]);
+      }
+      await writeEmployeeHistory(tx, {
+        employeeId: id,
+        changeType: "contract_added",
+        summary: `إضافة عقد ${CONTRACT_TYPES_AR[input.contractType] ?? input.contractType}${input.contractNo ? ` رقم ${input.contractNo}` : ""} — ${CONTRACT_STATUS_AR[input.status] ?? input.status}`,
+        details: { contractId, contractNo: input.contractNo, contractType: input.contractType, startDate: input.startDate, endDate: input.endDate ?? null, baseSalary: input.baseSalary, status: input.status },
+        effectiveDate: input.startDate,
+        actorId: actor.id,
+      });
+      if (salaryChanged) {
+        await writeEmployeeHistory(tx, {
+          employeeId: id,
+          changeType: "salary_changed",
+          summary: `تحديث الراتب الأساسي من العقد إلى ${input.baseSalary}`,
+          details: { from: Number(current.base_salary), to: input.baseSalary, source: "contract", contractId },
+          effectiveDate: input.startDate,
+          actorId: actor.id,
+        });
+      }
+    });
+    await writeAudit(db, logger, {
+      action: "contract.created",
+      actor: { id: actor.id, username: actor.username },
+      entityType: "employee_contract",
+      entityId: contractId,
+      branchId: current.branch_id,
+      severity: "info",
+      details: { employeeId: id, employeeNo: current.employee_no, contractNo: input.contractNo, status: input.status, baseSalary: input.baseSalary },
+      ip: requestIp(req),
+      userAgent: requestUserAgent(req),
+    });
+    const contract = await loadContract(db, id, contractId);
+    res.status(201).json({ contract: presentContract(contract) });
+  });
+
+  router.patch("/:id/contracts/:contractId", requireManage, async (req, res) => {
+    if (!req.auth) throw unauthorized();
+    const actor = req.auth.user;
+    const id = z.uuid("معرّف موظف غير صالح.").parse(req.params.id);
+    const contractId = z.uuid("معرّف عقد غير صالح.").parse(req.params.contractId);
+    const input = parseBody(contractUpdateSchema, req.body);
+    const current = await loadEmployee(db, id);
+    if (!canAccessBranch(actor, current.branch_id)) throw notFound("الموظف غير موجود أو خارج نطاق صلاحيتك.");
+    if (current.archived_at) throw new ApiError(400, "EMPLOYEE_ARCHIVED", "الموظف مؤرشف ولا يمكن تعديل عقوده.");
+    const existing = await loadContract(db, id, contractId);
+    const next = {
+      contract_no: input.contractNo ?? existing.contract_no,
+      contract_type: input.contractType ?? existing.contract_type,
+      start_date: input.startDate ?? toDateOnly(existing.start_date) ?? today(),
+      end_date: input.endDate !== undefined ? (input.endDate ?? null) : toDateOnly(existing.end_date),
+      base_salary: input.baseSalary ?? Number(existing.base_salary),
+      status: input.status ?? existing.status,
+      notes: input.notes ?? existing.notes,
+    };
+    if (next.end_date && next.end_date < next.start_date) {
+      throw new ApiError(400, "INVALID_CONTRACT_DATES", "تاريخ نهاية العقد يجب ألا يسبق بدايته.");
+    }
+    if (next.status === "active" && existing.status !== "active") {
+      const active = await db.query<Row & { id: string; contract_no: string }>(
+        "SELECT id, contract_no FROM employee_contracts WHERE employee_id = $1 AND status = 'active' AND id <> $2 LIMIT 1",
+        [id, contractId],
+      );
+      if (active.rows[0]) {
+        throw conflict(`يوجد عقد نشط آخر${active.rows[0].contract_no ? ` (${active.rows[0].contract_no})` : ""}. أنهِه أولاً.`);
+      }
+    }
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    const compare = (label: string, before: unknown, after: unknown) => {
+      if (String(before ?? "") !== String(after ?? "")) changes[label] = { from: before ?? "—", to: after ?? "—" };
+    };
+    compare("رقم العقد", existing.contract_no, next.contract_no);
+    compare("نوع العقد", CONTRACT_TYPES_AR[existing.contract_type] ?? existing.contract_type, CONTRACT_TYPES_AR[next.contract_type] ?? next.contract_type);
+    compare("تاريخ البداية", toDateOnly(existing.start_date), next.start_date);
+    compare("تاريخ النهاية", toDateOnly(existing.end_date), next.end_date);
+    compare("الراتب الأساسي", Number(existing.base_salary), next.base_salary);
+    compare("الحالة", CONTRACT_STATUS_AR[existing.status] ?? existing.status, CONTRACT_STATUS_AR[next.status] ?? next.status);
+    compare("ملاحظات", existing.notes, next.notes);
+    if (Object.keys(changes).length === 0) throw new ApiError(400, "NO_CHANGES", "لا توجد تغييرات لحفظها.");
+    const salaryChanged = next.status === "active" && Number(next.base_salary) !== Number(current.base_salary);
+    await db.transaction(async (tx) => {
+      await tx.query(
+        `UPDATE employee_contracts SET contract_no=$3, contract_type=$4, start_date=$5, end_date=$6,
+           base_salary=$7, status=$8, notes=$9, updated_by=$10, updated_at=now()
+         WHERE id=$1 AND employee_id=$2`,
+        [contractId, id, next.contract_no, next.contract_type, next.start_date, next.end_date, next.base_salary, next.status, next.notes, actor.id],
+      );
+      if (salaryChanged) {
+        await tx.query("UPDATE employees SET base_salary = $2, updated_by = $3, updated_at = now() WHERE id = $1", [
+          id,
+          next.base_salary,
+          actor.id,
+        ]);
+      }
+      await writeEmployeeHistory(tx, {
+        employeeId: id,
+        changeType: "contract_updated",
+        summary: `تعديل عقد${next.contract_no ? ` ${next.contract_no}` : ""}: ${Object.keys(changes).join("، ")}`,
+        details: { contractId, changes },
+        effectiveDate: next.start_date,
+        actorId: actor.id,
+      });
+      if (salaryChanged) {
+        await writeEmployeeHistory(tx, {
+          employeeId: id,
+          changeType: "salary_changed",
+          summary: `تحديث الراتب الأساسي من العقد إلى ${next.base_salary}`,
+          details: { from: Number(current.base_salary), to: next.base_salary, source: "contract", contractId },
+          effectiveDate: next.start_date,
+          actorId: actor.id,
+        });
+      }
+    });
+    await writeAudit(db, logger, {
+      action: "contract.updated",
+      actor: { id: actor.id, username: actor.username },
+      entityType: "employee_contract",
+      entityId: contractId,
+      branchId: current.branch_id,
+      severity: "info",
+      details: { employeeId: id, employeeNo: current.employee_no, changes },
+      ip: requestIp(req),
+      userAgent: requestUserAgent(req),
+    });
+    const contract = await loadContract(db, id, contractId);
+    res.json({ contract: presentContract(contract) });
   });
 
   return router;

@@ -18,7 +18,6 @@ import { can, refreshMeta, state } from "../state.js";
 import { friendlyError, pageEnter, tablePagination } from "../ui.js";
 import {
   EMP_STATUS,
-  attachmentsPanel,
   branchList,
   branchSelectOptions,
   canDeleteRecords,
@@ -28,10 +27,10 @@ import {
   detailRows,
   downloadFile,
   empTag,
+  fileSize,
   filterBar,
   money,
   openFormDialog,
-  openReasonDialog,
   personCell,
   statusTag,
   summaryStrip,
@@ -50,7 +49,22 @@ function options(items, selected = "", placeholder = "") {
   return nodes;
 }
 
-function employeeFields(employee = {}, { create = false } = {}) {
+function employeeFields(employee = {}, { create = false, managers = [] } = {}) {
+  const titles = state.meta?.jobTitles ?? [];
+  const titleOptions = titles.map((title) => ({ value: title.id, label: title.name }));
+  if (employee.jobTitleId && !titles.some((title) => title.id === employee.jobTitleId)) {
+    titleOptions.push({ value: employee.jobTitleId, label: `${employee.jobTitle || "مسمى غير مفعّل"} (غير مفعّل)` });
+  }
+  const managerOptions = managers
+    .filter((manager) => manager.id !== employee.id)
+    .filter((manager) => create || manager.branchId === employee.branchId)
+    .map((manager) => {
+      const branchName = branchList().find((branch) => branch.id === manager.branchId)?.name;
+      return {
+        value: manager.id,
+        label: `${manager.fullName} — ${manager.employeeNo}${manager.departmentName ? ` · ${manager.departmentName}` : ""}${create && branchName ? ` · ${branchName}` : ""}`,
+      };
+    });
   return [
     ...(create
       ? [{ name: "employeeNo", label: "الرقم الوظيفي", hint: "اتركه فارغاً لتوليده تلقائياً", maxlength: 30, dir: "ltr" }]
@@ -69,7 +83,25 @@ function employeeFields(employee = {}, { create = false } = {}) {
       placeholder: "بدون قسم",
       value: employee.departmentId ?? "",
     },
-    { name: "jobTitle", label: "المسمى الوظيفي", maxlength: 120, value: employee.jobTitle ?? "" },
+    {
+      name: "jobTitleId",
+      label: "المسمى الوظيفي المعتمد",
+      type: "select",
+      options: titleOptions,
+      placeholder: "بدون مسمى معتمد",
+      hint: "تُدار المسميات من زر «المسميات الوظيفية».",
+      value: employee.jobTitleId ?? "",
+    },
+    {
+      name: "managerId",
+      label: "المدير المباشر",
+      type: "select",
+      options: managerOptions,
+      placeholder: "بدون مدير مباشر",
+      hint: create ? "يجب أن يكون المدير المباشر في نفس فرع الموظف." : undefined,
+      value: employee.managerId ?? "",
+    },
+    { name: "jobTitle", label: "أو مسمى نصي حر", maxlength: 120, value: employee.jobTitle ?? "", hint: "يُستخدم فقط عند عدم اختيار مسمى معتمد." },
     { name: "hireDate", label: "تاريخ التعيين", type: "date", required: true, value: employee.hireDate ?? "" },
     { name: "baseSalary", label: "الراتب الأساسي", type: "number", min: 0, max: 999999999, step: "0.01", required: true, value: employee.baseSalary ?? 0 },
     {
@@ -82,6 +114,36 @@ function employeeFields(employee = {}, { create = false } = {}) {
     { name: "notes", label: "ملاحظات", type: "textarea", maxlength: 2000, span: 2, value: employee.notes ?? "" },
   ];
 }
+
+async function loadManagerOptions() {
+  try {
+    const data = await api("/api/employees/options");
+    return data.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
+const CONTRACT_TYPES = { permanent: "دائم", fixed: "محدد المدة", probation: "تحت التجربة", part_time: "دوام جزئي" };
+const CONTRACT_STATUS = {
+  active: { label: "نشط", tone: "success" },
+  ended: { label: "منتهٍ", tone: "neutral" },
+  terminated: { label: "ملغي", tone: "danger" },
+};
+const DOCUMENT_TYPES = { contract: "عقد", national_id: "هوية وطنية", certificate: "شهادة", medical: "تقرير طبي", other: "مستند آخر" };
+const HISTORY_TYPES = {
+  hired: "تعيين",
+  updated: "تعديل بيانات",
+  status_changed: "تغيير الحالة",
+  salary_changed: "تغيير الراتب",
+  transferred: "نقل وظيفي",
+  contract_added: "إضافة عقد",
+  contract_updated: "تعديل عقد",
+  archived: "أرشفة",
+  document_added: "إضافة مستند",
+  document_updated: "تعديل مستند",
+  document_deleted: "حذف مستند",
+};
 
 export async function renderEmployees(host, token) {
   const query = state.employees ?? {
@@ -158,6 +220,9 @@ export async function renderEmployees(host, token) {
     el("button", { class: "btn btn-ghost", type: "button", onclick: () => downloadFile("/api/employees/import-template", "employees-template.xlsx") }, icon("file-text"), "قالب الاستيراد"),
     can("settings.manage") || canManage
       ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => openDepartments() }, icon("building"), "الأقسام")
+      : null,
+    canManage
+      ? el("button", { class: "btn btn-ghost", type: "button", onclick: () => openJobTitles() }, icon("user-check"), "المسميات الوظيفية")
       : null,
   );
 
@@ -256,10 +321,11 @@ export async function renderEmployees(host, token) {
   }
 
   async function openCreate() {
+    const managers = await loadManagerOptions();
     openFormDialog({
       title: "إضافة موظف جديد",
-      description: "سيُولَّد الرقم الوظيفي تلقائياً إذا تُرك فارغاً. يمكن إضافة مرفقات الملف بعد الحفظ.",
-      fields: employeeFields({}, { create: true }),
+      description: "سيُولَّد الرقم الوظيفي تلقائياً إذا تُرك فارغاً. يمكن إضافة العقود والمستندات من ملف الموظف بعد الحفظ.",
+      fields: employeeFields({}, { create: true, managers }),
       submitLabel: "إضافة الموظف",
       size: "lg",
       onSubmit: async (values) => {
@@ -270,6 +336,8 @@ export async function renderEmployees(host, token) {
           nationalId: values.nationalId,
           branchId: values.branchId,
           departmentId: values.departmentId || undefined,
+          jobTitleId: values.jobTitleId || undefined,
+          managerId: values.managerId || undefined,
           jobTitle: values.jobTitle,
           hireDate: values.hireDate,
           baseSalary: Number(values.baseSalary || 0),
@@ -293,10 +361,11 @@ export async function renderEmployees(host, token) {
       return;
     }
     const current = detail.employee;
+    const managers = await loadManagerOptions();
     openFormDialog({
       title: `تعديل بيانات — ${current.fullName}`,
       description: "تغيير الفرع لا يتم من هنا؛ استخدم طلب نقل موظف لضمان التدقيق والاعتماد.",
-      fields: employeeFields(current),
+      fields: employeeFields(current, { managers }),
       submitLabel: "حفظ التعديلات",
       size: "lg",
       onSubmit: async (values) => {
@@ -307,6 +376,8 @@ export async function renderEmployees(host, token) {
             phone: values.phone,
             nationalId: values.nationalId,
             departmentId: values.departmentId || "",
+            jobTitleId: values.jobTitleId,
+            managerId: values.managerId,
             jobTitle: values.jobTitle,
             hireDate: values.hireDate,
             baseSalary: Number(values.baseSalary || 0),
@@ -378,58 +449,436 @@ export async function renderEmployees(host, token) {
       toast(friendlyError(error), "error");
       return;
     }
-    const employee = detail.employee;
-    const transfers = detail.transfers ?? [];
-    const transferTable = transfers.length
-      ? el(
-          "div",
-          { class: "table-wrap" },
-          el(
-            "table",
-            { class: "att-table" },
-            el("thead", {}, el("tr", {}, ...["من فرع", "إلى فرع", "التاريخ", "الحالة"].map((label) => el("th", { text: label })))),
+    let activeTab = "data";
+    const tabsHost = el("div", { class: "tabs" });
+    const contentHost = el("div");
+
+    const reload = async () => {
+      try {
+        detail = await api(`/api/employees/${id}`);
+        render();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      }
+    };
+
+    const openContractForm = (contract = null) => {
+      const employee = detail.employee;
+      openFormDialog({
+        title: contract ? `تعديل العقد — ${contract.contractNo || "بدون رقم"}` : `إضافة عقد — ${employee.fullName}`,
+        description: "العقد النشط يحدّث الراتب الأساسي في ملف الموظف تلقائياً، ويُحفظ كل تغيير في السجل الوظيفي.",
+        fields: [
+          { name: "contractNo", label: "رقم العقد", maxlength: 60, dir: "ltr", value: contract?.contractNo ?? "" },
+          {
+            name: "contractType",
+            label: "نوع العقد",
+            type: "select",
+            options: Object.entries(CONTRACT_TYPES).map(([value, label]) => ({ value, label })),
+            value: contract?.contractType ?? "permanent",
+          },
+          { name: "startDate", label: "تاريخ البداية", type: "date", required: true, value: contract?.startDate ?? employee.hireDate ?? "" },
+          { name: "endDate", label: "تاريخ النهاية (اختياري)", type: "date", value: contract?.endDate ?? "" },
+          {
+            name: "baseSalary",
+            label: "الراتب في العقد",
+            type: "number",
+            min: 0,
+            max: 999999999,
+            step: "0.01",
+            required: true,
+            value: contract?.baseSalary ?? employee.baseSalary ?? 0,
+          },
+          {
+            name: "status",
+            label: "حالة العقد",
+            type: "select",
+            options: Object.entries(CONTRACT_STATUS).map(([value, meta]) => ({ value, label: meta.label })),
+            value: contract?.status ?? "active",
+          },
+          { name: "notes", label: "ملاحظات", type: "textarea", maxlength: 2000, span: 2, value: contract?.notes ?? "" },
+        ],
+        submitLabel: contract ? "حفظ العقد" : "إضافة العقد",
+        size: "lg",
+        onSubmit: async (values) => {
+          const body = {
+            contractNo: values.contractNo,
+            contractType: values.contractType,
+            startDate: values.startDate,
+            endDate: values.endDate || "",
+            baseSalary: Number(values.baseSalary || 0),
+            status: values.status,
+            notes: values.notes,
+          };
+          if (contract) {
+            await api(`/api/employees/${employee.id}/contracts/${contract.id}`, { method: "PATCH", body });
+            toast("تم تحديث العقد.", "success");
+          } else {
+            await api(`/api/employees/${employee.id}/contracts`, { method: "POST", body });
+            toast("تمت إضافة العقد.", "success");
+          }
+          await reload();
+        },
+      });
+    };
+
+    const openDocumentForm = (document) => {
+      openFormDialog({
+        title: "بيانات المستند",
+        fields: [
+          { name: "title", label: "عنوان المستند", maxlength: 160, value: document.title ?? "" },
+          {
+            name: "documentType",
+            label: "نوع المستند",
+            type: "select",
+            options: Object.entries(DOCUMENT_TYPES).map(([value, label]) => ({ value, label })),
+            value: document.documentType ?? "other",
+          },
+          { name: "expiresAt", label: "تاريخ الانتهاء (اختياري)", type: "date", value: document.expiresAt ?? "" },
+        ],
+        submitLabel: "حفظ البيانات",
+        onSubmit: async (values) => {
+          await api(`/api/attachments/${document.id}`, {
+            method: "PATCH",
+            body: { title: values.title, documentType: values.documentType, expiresAt: values.expiresAt || "" },
+          });
+          toast("تم تحديث بيانات المستند.", "success");
+          await reload();
+        },
+      });
+    };
+
+    const deleteDocument = async (document) => {
+      const ok = await confirmDialog({
+        title: "حذف المستند",
+        message: `سيتم حذف "${document.title || document.fileName}" نهائياً. سيبقى أثر الحذف في السجل الوظيفي.`,
+        confirmLabel: "حذف",
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api(`/api/attachments/${document.id}`, { method: "DELETE" });
+        toast("تم حذف المستند.", "success");
+        await reload();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      }
+    };
+
+    const buildDataTab = () => {
+      const employee = detail.employee;
+      return el(
+        "div",
+        {},
+        detailRows([
+          ["الاسم", employee.fullName],
+          ["الرقم الوظيفي", employee.employeeNo],
+          ["الفرع", employee.branchName || "—"],
+          ["القسم", employee.departmentName || "—"],
+          ["المسمى الوظيفي", employee.jobTitle || "—"],
+          ["المدير المباشر", employee.managerName ? `${employee.managerName}${employee.managerNo ? ` (${employee.managerNo})` : ""}` : "—"],
+          ["الهاتف", employee.phone || "—"],
+          ["الرقم الوطني", employee.nationalId || "—"],
+          ["تاريخ التعيين", formatDate(employee.hireDate)],
+          ["الراتب الأساسي", money(employee.baseSalary)],
+          ["الحالة", empTag(employee.status)],
+          ["أُنشئ في", formatDateTime(employee.createdAt)],
+          employee.archivedAt ? ["أُرشف في", `${formatDateTime(employee.archivedAt)} — ${employee.archiveReason || ""}`] : null,
+          ["ملاحظات", employee.notes || "—"],
+        ]),
+      );
+    };
+
+    const buildContractsTab = () => {
+      const employee = detail.employee;
+      const contracts = detail.contracts ?? [];
+      const canEdit = canManage && !employee.archivedAt;
+      const table = contracts.length
+        ? el(
+            "div",
+            { class: "table-wrap" },
             el(
-              "tbody",
-              {},
-              ...transfers.map((transfer) =>
-                el(
-                  "tr",
-                  {},
-                  el("td", { text: transfer.fromBranch || "—" }),
-                  el("td", { text: transfer.toBranch || "—" }),
-                  el("td", { class: "tiny", text: formatDate(transfer.effectiveDate) }),
-                  el("td", {}, statusTag({ pending: { label: "بانتظار الاعتماد", tone: "info" }, approved: { label: "معتمد", tone: "success" }, rejected: { label: "مرفوض", tone: "danger" }, cancelled: { label: "ملغى", tone: "neutral" } }, transfer.status)),
+              "table",
+              { class: "att-table" },
+              el(
+                "thead",
+                {},
+                el("tr", {}, ...["رقم العقد", "النوع", "البداية", "النهاية", "الراتب", "الحالة", ""].map((label) => el("th", { text: label }))),
+              ),
+              el(
+                "tbody",
+                {},
+                ...contracts.map((contract) =>
+                  el(
+                    "tr",
+                    {},
+                    el("td", { class: "tiny", dir: "ltr", text: contract.contractNo || "—" }),
+                    el("td", { class: "tiny", text: CONTRACT_TYPES[contract.contractType] ?? contract.contractType }),
+                    el("td", { class: "tiny nowrap", text: formatDate(contract.startDate) }),
+                    el("td", { class: "tiny nowrap", text: contract.endDate ? formatDate(contract.endDate) : "—" }),
+                    el("td", { class: "num nowrap", text: money(contract.baseSalary) }),
+                    el("td", {}, statusTag(CONTRACT_STATUS, contract.status)),
+                    el(
+                      "td",
+                      {},
+                      canEdit
+                        ? el("button", { class: "icon-btn", type: "button", title: "تعديل العقد", onclick: () => openContractForm(contract) }, icon("pencil"))
+                        : null,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
-        )
-      : el("p", { class: "tiny muted", text: "لا توجد تحويلات وظيفية لهذا الموظف." });
+          )
+        : el("p", { class: "tiny muted", text: "لا توجد عقود مسجلة لهذا الموظف." });
+      return el(
+        "div",
+        {},
+        el(
+          "div",
+          { class: "section-head" },
+          el("h3", { class: "section-title" }, icon("calendar"), "العقود"),
+          canEdit ? el("button", { class: "btn btn-primary btn-sm", type: "button", onclick: () => openContractForm() }, icon("plus"), "إضافة عقد") : null,
+        ),
+        table,
+      );
+    };
 
-    const attachments = attachmentsPanel({ ownerType: "employee", ownerId: employee.id, canEdit: canManage });
-    const body = el(
-      "div",
-      {},
-      detailRows([
-        ["الاسم", employee.fullName],
-        ["الرقم الوظيفي", employee.employeeNo],
-        ["الفرع", employee.branchName || "—"],
-        ["القسم", employee.departmentName || "—"],
-        ["المسمى الوظيفي", employee.jobTitle || "—"],
-        ["الهاتف", employee.phone || "—"],
-        ["الرقم الوطني", employee.nationalId || "—"],
-        ["تاريخ التعيين", formatDate(employee.hireDate)],
-        ["الراتب الأساسي", money(employee.baseSalary)],
-        ["الحالة", empTag(employee.status)],
-        ["أُنشئ في", formatDateTime(employee.createdAt)],
-        employee.archivedAt ? ["أُرشف في", `${formatDateTime(employee.archivedAt)} — ${employee.archiveReason || ""}`] : null,
-        ["ملاحظات", employee.notes || "—"],
-      ]),
-      el("div", { class: "section-head" }, el("h3", { class: "section-title" }, icon("arrow-left-right"), "التحويلات الوظيفية")),
-      transferTable,
-      attachments.node,
-    );
-    openModal({ title: `ملف الموظف — ${employee.fullName}`, body, size: "lg" });
+    const buildDocumentsTab = () => {
+      const employee = detail.employee;
+      const documents = detail.documents ?? [];
+      const canEdit = canManage && !employee.archivedAt;
+      const errorHost = el("div");
+      const listHost = el("div");
+
+      const renderList = () => {
+        if (!documents.length) {
+          listHost.replaceChildren(el("p", { class: "tiny muted", text: "لا توجد مستندات مرفوعة." }));
+          return;
+        }
+        listHost.replaceChildren(
+          ...documents.map((document) =>
+            el(
+              "div",
+              { class: "attachment-item" },
+              icon("file-text"),
+              el(
+                "div",
+                { class: "attachment-copy" },
+                el("strong", { text: document.title || document.fileName }),
+                el(
+                  "span",
+                  {
+                    text: `${DOCUMENT_TYPES[document.documentType] ?? document.documentType} · ${document.fileName} · ${fileSize(document.sizeBytes)}${document.expiresAt ? ` · ينتهي ${formatDate(document.expiresAt)}` : ""}`,
+                  },
+                ),
+              ),
+              el(
+                "div",
+                { class: "attachment-actions" },
+                el(
+                  "button",
+                  {
+                    class: "icon-btn",
+                    type: "button",
+                    title: "تنزيل المستند",
+                    onclick: () => downloadFile(`/api/attachments/${document.id}/download`, document.fileName).catch((error) => toast(error.message, "error")),
+                  },
+                  icon("download"),
+                ),
+                canEdit ? el("button", { class: "icon-btn", type: "button", title: "تعديل البيانات", onclick: () => openDocumentForm(document) }, icon("pencil")) : null,
+                canEdit ? el("button", { class: "icon-btn danger", type: "button", title: "حذف المستند", onclick: () => deleteDocument(document) }, icon("trash")) : null,
+              ),
+            ),
+          ),
+        );
+      };
+      renderList();
+
+      if (!canEdit) {
+        return el("div", {}, el("h3", { class: "section-title" }, icon("file-text"), "المستندات"), listHost);
+      }
+
+      let chosenFile = null;
+      const fileInput = el("input", {
+        type: "file",
+        accept: ".pdf,.png,.jpg,.jpeg,.webp,.docx,.xlsx",
+        class: "visually-hidden",
+      });
+      const fileLabel = el("span", { class: "tiny muted", text: "لم يتم اختيار ملف" });
+      const titleInput = el("input", { class: "input", maxlength: 160, placeholder: "عنوان المستند (اختياري)" });
+      const typeSelect = el(
+        "select",
+        { class: "select" },
+        ...Object.entries(DOCUMENT_TYPES).map(([value, label]) => el("option", { value }, label)),
+      );
+      const expiryInput = el("input", { class: "input", type: "date", title: "تاريخ الانتهاء" });
+      const chooseButton = el("button", { class: "btn btn-secondary btn-sm", type: "button", onclick: () => fileInput.click() }, icon("upload"), "اختيار ملف");
+      fileInput.addEventListener("change", () => {
+        chosenFile = fileInput.files?.[0] ?? null;
+        fileLabel.textContent = chosenFile ? `${chosenFile.name} · ${fileSize(chosenFile.size)}` : "لم يتم اختيار ملف";
+      });
+      const uploadButton = el("button", { class: "btn btn-primary btn-sm", type: "button" }, icon("upload"), "رفع المستند");
+      uploadButton.addEventListener("click", async () => {
+        errorHost.replaceChildren();
+        if (!chosenFile) {
+          errorHost.append(alertBox("اختر ملفاً أولاً.", "error"));
+          return;
+        }
+        if (chosenFile.size > 2 * 1024 * 1024) {
+          errorHost.append(alertBox("الحد الأقصى لحجم الملف 2 ميجابايت.", "error"));
+          return;
+        }
+        const params = new URLSearchParams({
+          ownerType: "employee",
+          ownerId: employee.id,
+          fileName: chosenFile.name,
+          title: titleInput.value.trim() || chosenFile.name,
+          documentType: typeSelect.value,
+        });
+        if (expiryInput.value) params.set("expiresAt", expiryInput.value);
+        setButtonLoading(uploadButton, true, "جارٍ الرفع…");
+        try {
+          const response = await fetch(`/api/attachments?${params.toString()}`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": chosenFile.type || "application/octet-stream",
+              "X-Requested-With": "XMLHttpRequest",
+            },
+            body: chosenFile,
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => null);
+            throw new Error(payload?.error?.message ?? "تعذر رفع المستند.");
+          }
+          toast("تم رفع المستند.", "success");
+          await reload();
+        } catch (error) {
+          errorHost.replaceChildren(alertBox(friendlyError(error), "error"));
+        } finally {
+          setButtonLoading(uploadButton, false);
+        }
+      });
+
+      return el(
+        "div",
+        {},
+        el("div", { class: "section-head" }, el("h3", { class: "section-title" }, icon("file-text"), "المستندات")),
+        el(
+          "div",
+          { class: "form-grid" },
+          el("div", { class: "form-field" }, el("label", { class: "form-label", text: "الملف" }), el("div", { class: "inline-actions" }, chooseButton, fileInput, fileLabel)),
+          el("div", { class: "form-field" }, el("label", { class: "form-label", text: "العنوان" }), titleInput),
+          el("div", { class: "form-field" }, el("label", { class: "form-label", text: "النوع" }), typeSelect),
+          el("div", { class: "form-field" }, el("label", { class: "form-label", text: "تاريخ الانتهاء" }), expiryInput),
+        ),
+        el("div", { class: "inline-actions", style: "margin:12px 0" }, uploadButton),
+        errorHost,
+        listHost,
+      );
+    };
+
+    const buildHistoryTab = () => {
+      const history = detail.history ?? [];
+      if (!history.length) return el("p", { class: "tiny muted", text: "لا يوجد سجل تغييرات بعد." });
+      return el(
+        "div",
+        { class: "table-wrap" },
+        el(
+          "table",
+          { class: "att-table" },
+          el("thead", {}, el("tr", {}, ...["العملية", "الوصف", "تاريخ السريان", "بواسطة", "وقت التسجيل"].map((label) => el("th", { text: label })))),
+          el(
+            "tbody",
+            {},
+            ...history.map((row) =>
+              el(
+                "tr",
+                {},
+                el("td", {}, el("span", { class: "tag neutral", text: HISTORY_TYPES[row.changeType] ?? row.changeType })),
+                el("td", { class: "tiny", text: row.summary }),
+                el("td", { class: "tiny nowrap", text: row.effectiveDate ? formatDate(row.effectiveDate) : "—" }),
+                el("td", { class: "tiny", text: row.createdBy || "—" }),
+                el("td", { class: "tiny nowrap", text: formatDateTime(row.createdAt) }),
+              ),
+            ),
+          ),
+        ),
+      );
+    };
+
+    const buildTransfersTab = () => {
+      const transfers = detail.transfers ?? [];
+      if (!transfers.length) return el("p", { class: "tiny muted", text: "لا توجد تحويلات وظيفية لهذا الموظف." });
+      return el(
+        "div",
+        { class: "table-wrap" },
+        el(
+          "table",
+          { class: "att-table" },
+          el("thead", {}, el("tr", {}, ...["من فرع", "إلى فرع", "التاريخ", "الحالة"].map((label) => el("th", { text: label })))),
+          el(
+            "tbody",
+            {},
+            ...transfers.map((transfer) =>
+              el(
+                "tr",
+                {},
+                el("td", { text: transfer.fromBranch || "—" }),
+                el("td", { text: transfer.toBranch || "—" }),
+                el("td", { class: "tiny", text: formatDate(transfer.effectiveDate) }),
+                el("td", {}, statusTag({ pending: { label: "بانتظار الاعتماد", tone: "info" }, approved: { label: "معتمد", tone: "success" }, rejected: { label: "مرفوض", tone: "danger" }, cancelled: { label: "ملغى", tone: "neutral" } }, transfer.status)),
+              ),
+            ),
+          ),
+        ),
+      );
+    };
+
+    const TAB_LABELS = [
+      ["data", "البيانات الأساسية", "user-check"],
+      ["contracts", "العقود", "calendar"],
+      ["documents", "المستندات", "file-text"],
+      ["history", "السجل الوظيفي", "scroll"],
+      ["transfers", "التحويلات", "arrow-left-right"],
+    ];
+
+    const render = () => {
+      const employee = detail.employee;
+      tabsHost.replaceChildren(
+        ...TAB_LABELS.map(([key, label, iconName]) =>
+          el(
+            "button",
+            {
+              class: `tab-btn ${activeTab === key ? "active" : ""}`,
+              type: "button",
+              onclick: () => {
+                activeTab = key;
+                render();
+              },
+            },
+            icon(iconName),
+            label,
+          ),
+        ),
+      );
+      const content =
+        activeTab === "contracts"
+          ? buildContractsTab()
+          : activeTab === "documents"
+            ? buildDocumentsTab()
+            : activeTab === "history"
+              ? buildHistoryTab()
+              : activeTab === "transfers"
+                ? buildTransfersTab()
+                : buildDataTab();
+      contentHost.replaceChildren(content);
+      const title = tabsHost.parentElement?.querySelector?.(".modal-title");
+      if (title) title.textContent = `ملف الموظف — ${employee.fullName}`;
+    };
+
+    render();
+    openModal({ title: `ملف الموظف — ${detail.employee.fullName}`, body: el("div", {}, tabsHost, contentHost), size: "lg" });
   }
 
   function openImport() {
@@ -596,6 +1045,121 @@ export async function renderEmployees(host, token) {
       title: "إدارة الأقسام",
       description: "الأقسام تُستخدم في تصنيف الموظفين وتصفية التحضير والتقارير.",
       body: el("div", {}, errorHost, el("div", { class: "inline-actions", style: "margin-bottom:12px" }, name, addButton), listHost),
+      size: "md",
+    });
+  }
+
+  async function openJobTitles() {
+    let result;
+    try {
+      result = await api("/api/job-titles");
+    } catch (error) {
+      toast(friendlyError(error), "error");
+      return;
+    }
+    const listHost = el("div");
+    const errorHost = el("div");
+    const name = el("input", { class: "input", maxlength: 120, placeholder: "اسم المسمى الوظيفي" });
+    const department = el(
+      "select",
+      { class: "select" },
+      el("option", { value: "" }, "بدون قسم محدد"),
+      ...departmentList().map((item) => el("option", { value: item.id }, item.name)),
+    );
+    const addButton = el("button", { class: "btn btn-primary", type: "button" }, icon("plus"), "إضافة");
+    const renderList = (items) => {
+      if (!items.length) {
+        listHost.replaceChildren(el("p", { class: "tiny muted", text: "لا توجد مسميات وظيفية بعد." }));
+        return;
+      }
+      listHost.replaceChildren(
+        ...items.map((title) =>
+          el(
+            "div",
+            { class: "attachment-item" },
+            icon("user-check"),
+            el(
+              "div",
+              { class: "attachment-copy" },
+              el("strong", { text: title.name }),
+              el("span", { text: `${title.departmentName || "بدون قسم"} · ${formatNumber(title.employeesCount)} موظفاً${title.active ? "" : " · معطّل"}` }),
+            ),
+            el(
+              "div",
+              { class: "inline-actions" },
+              el(
+                "button",
+                {
+                  class: "btn btn-ghost btn-sm",
+                  type: "button",
+                  onclick: async () => {
+                    const newName = prompt("اسم المسمى الوظيفي", title.name);
+                    if (!newName || !newName.trim() || newName.trim() === title.name) return;
+                    try {
+                      await api(`/api/job-titles/${title.id}`, { method: "PATCH", body: { name: newName.trim() } });
+                      await refreshMeta();
+                      toast("تم تحديث المسمى الوظيفي.", "success");
+                      const refreshed = await api("/api/job-titles");
+                      renderList(refreshed.items);
+                    } catch (error) {
+                      errorHost.replaceChildren(alertBox(friendlyError(error), "error"));
+                    }
+                  },
+                },
+                "إعادة تسمية",
+              ),
+              el(
+                "button",
+                {
+                  class: "btn btn-ghost btn-sm",
+                  type: "button",
+                  onclick: async () => {
+                    try {
+                      await api(`/api/job-titles/${title.id}`, { method: "PATCH", body: { active: !title.active } });
+                      await refreshMeta();
+                      const refreshed = await api("/api/job-titles");
+                      renderList(refreshed.items);
+                      toast(title.active ? "تم تعطيل المسمى الوظيفي." : "تم تفعيل المسمى الوظيفي.", "success");
+                    } catch (error) {
+                      errorHost.replaceChildren(alertBox(friendlyError(error), "error"));
+                    }
+                  },
+                },
+                title.active ? "تعطيل" : "تفعيل",
+              ),
+            ),
+          ),
+        ),
+      );
+    };
+    addButton.addEventListener("click", async () => {
+      errorHost.replaceChildren();
+      if (!name.value.trim()) {
+        errorHost.append(alertBox("أدخل اسم المسمى الوظيفي.", "error"));
+        return;
+      }
+      setButtonLoading(addButton, true, "جارٍ الإضافة…");
+      try {
+        await api("/api/job-titles", {
+          method: "POST",
+          body: { name: name.value.trim(), departmentId: department.value || "", active: true },
+        });
+        name.value = "";
+        const refreshed = await api("/api/job-titles");
+        renderList(refreshed.items);
+        await refreshMeta();
+        toast("تمت إضافة المسمى الوظيفي.", "success");
+      } catch (error) {
+        errorHost.append(alertBox(friendlyError(error), "error"));
+      } finally {
+        setButtonLoading(addButton, false);
+      }
+    });
+    renderList(result.items);
+    openModal({
+      title: "إدارة المسميات الوظيفية",
+      description: "المسميات المعتمدة تُستخدم في ملف الموظف وتُحدّث تلقائياً عند إعادة تسميتها. التعطيل يمنع اختيارها لموظفين جدد.",
+      body: el("div", {}, errorHost, el("div", { class: "inline-actions", style: "margin-bottom:12px" }, name, department, addButton), listHost),
       size: "md",
     });
   }

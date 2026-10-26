@@ -6,7 +6,9 @@ import { hasPermission } from "../auth/types.js";
 import { writeAudit } from "../lib/audit.js";
 import { ApiError, forbidden, notFound, parseBody, requestIp, requestUserAgent, unauthorized } from "../lib/errors.js";
 import { newId } from "../lib/ids.js";
+import { isoDateSchema } from "../lib/hr-schemas.js";
 import { canAccessBranch } from "../services/access.js";
+import { writeEmployeeHistory } from "../services/employees.js";
 import { createRequireAuth, requirePasswordReady, type AuthDeps } from "../middleware/auth.js";
 
 const OWNER_TYPES = ["employee", "leave", "advance", "new_hire", "transfer"] as const;
@@ -35,8 +37,20 @@ const ownerQuerySchema = z.object({
   ownerId: z.uuid("معرّف العنصر غير صالح."),
 });
 
+const DOCUMENT_TYPES = ["contract", "national_id", "certificate", "medical", "other"] as const;
+const documentTypeSchema = z.enum(DOCUMENT_TYPES);
+
 const uploadQuerySchema = ownerQuerySchema.extend({
   fileName: z.string().trim().min(1).max(200).default("attachment"),
+  title: z.string().trim().max(160).default(""),
+  documentType: documentTypeSchema.default("other"),
+  expiresAt: z.union([z.literal(""), isoDateSchema]).transform((value) => value || null).optional(),
+});
+
+const documentUpdateSchema = z.object({
+  title: z.string().trim().max(160).optional(),
+  documentType: documentTypeSchema.optional(),
+  expiresAt: z.union([z.literal(""), isoDateSchema]).transform((value) => value || null).optional(),
 });
 
 interface AttachmentRow extends Row {
@@ -46,6 +60,9 @@ interface AttachmentRow extends Row {
   file_name: string;
   mime_type: string;
   size_bytes: number;
+  title: string;
+  document_type: string;
+  expires_at: string | null;
   uploaded_by_name: string | null;
   created_at: string | Date;
 }
@@ -104,11 +121,22 @@ function presentAttachment(row: AttachmentRow) {
     fileName: row.file_name,
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
+    title: row.title,
+    documentType: row.document_type,
+    expiresAt: row.expires_at ?? null,
     uploadedBy: row.uploaded_by_name,
     createdAt: new Date(row.created_at).toISOString(),
     downloadUrl: `/api/attachments/${row.id}/download`,
   };
 }
+
+const DOCUMENT_TYPES_AR: Record<string, string> = {
+  contract: "عقد",
+  national_id: "هوية وطنية",
+  certificate: "شهادة",
+  medical: "تقرير طبي",
+  other: "مستند آخر",
+};
 
 export function createAttachmentsRouter(deps: AuthDeps): Router {
   const { db, logger } = deps;
@@ -121,7 +149,9 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
     assertPermission(req.auth.user, query.ownerType, "view");
     await resolveOwnerBranch(db, req.auth.user, query.ownerType, query.ownerId);
     const result = await db.query<AttachmentRow>(
-      `SELECT a.id, a.owner_type, a.owner_id, a.file_name, a.mime_type, a.size_bytes, u.full_name AS uploaded_by_name, a.created_at
+      `SELECT a.id, a.owner_type, a.owner_id, a.file_name, a.mime_type, a.size_bytes,
+              a.title, a.document_type, a.expires_at::text AS expires_at,
+              u.full_name AS uploaded_by_name, a.created_at
        FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
        WHERE a.owner_type = $1 AND a.owner_id = $2
        ORDER BY a.created_at DESC`,
@@ -154,6 +184,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
     raw({ type: ALLOWED_MIME, limit: "2mb" }),
     async (req, res) => {
       if (!req.auth) throw unauthorized();
+      const actor = req.auth.user;
       const query = parseBody(uploadQuerySchema, req.query);
       assertPermission(req.auth.user, query.ownerType, "manage");
       const branchId = await resolveOwnerBranch(db, req.auth.user, query.ownerType, query.ownerId);
@@ -173,47 +204,149 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
         throw new ApiError(400, "ATTACHMENT_LIMIT", "الحد الأقصى للمرفقات لكل عنصر هو 10 ملفات.");
       }
       const fileName = decodeFileName(query.fileName);
+      const title = query.title || fileName;
       const id = newId();
-      await db.query(
-        `INSERT INTO attachments (id, owner_type, owner_id, file_name, mime_type, size_bytes, content, uploaded_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [id, query.ownerType, query.ownerId, fileName, mimeType, req.body.length, req.body, req.auth.user.id],
-      );
+      await db.transaction(async (tx) => {
+        await tx.query(
+          `INSERT INTO attachments (id, owner_type, owner_id, file_name, mime_type, size_bytes, content, uploaded_by, title, document_type, expires_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [id, query.ownerType, query.ownerId, fileName, mimeType, req.body.length, req.body, actor.id, title, query.documentType, query.expiresAt ?? null],
+        );
+        if (query.ownerType === "employee") {
+          await writeEmployeeHistory(tx, {
+            employeeId: query.ownerId,
+            changeType: "document_added",
+            summary: `إضافة مستند: ${title}`,
+            details: {
+              attachmentId: id,
+              fileName,
+              documentType: query.documentType,
+              expiresAt: query.expiresAt ?? null,
+            },
+            actorId: actor.id,
+          });
+        }
+      });
       await writeAudit(db, logger, {
         action: "attachment.uploaded",
-        actor: { id: req.auth.user.id, username: req.auth.user.username },
+        actor: { id: actor.id, username: actor.username },
         entityType: query.ownerType,
         entityId: query.ownerId,
         branchId,
         severity: "info",
-        details: { attachmentId: id, fileName, mimeType, sizeBytes: req.body.length },
+        details: { attachmentId: id, fileName, title, documentType: query.documentType, sizeBytes: req.body.length },
         ip: requestIp(req),
         userAgent: requestUserAgent(req),
       });
-      res.status(201).json({ id, fileName, mimeType, sizeBytes: req.body.length });
+      res.status(201).json({ id, fileName, title, documentType: query.documentType, expiresAt: query.expiresAt ?? null, mimeType, sizeBytes: req.body.length });
     },
   );
 
-  router.delete("/:id", async (req, res) => {
+  router.patch("/:id", async (req, res) => {
     if (!req.auth) throw unauthorized();
+    const actor = req.auth.user;
     const id = z.uuid("معرّف مرفق غير صالح.").parse(req.params.id);
-    const result = await db.query<Row & { owner_type: OwnerType; owner_id: string; file_name: string }>(
-      "SELECT owner_type, owner_id, file_name FROM attachments WHERE id = $1",
+    const input = parseBody(documentUpdateSchema, req.body);
+    const result = await db.query<AttachmentRow>(
+      `SELECT a.id, a.owner_type, a.owner_id, a.file_name, a.mime_type, a.size_bytes,
+              a.title, a.document_type, a.expires_at::text AS expires_at,
+              u.full_name AS uploaded_by_name, a.created_at
+       FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+       WHERE a.id = $1`,
       [id],
     );
     const row = result.rows[0];
     if (!row) throw notFound("المرفق غير موجود.");
-    assertPermission(req.auth.user, row.owner_type, "manage");
-    const branchId = await resolveOwnerBranch(db, req.auth.user, row.owner_type, row.owner_id);
-    await db.query("DELETE FROM attachments WHERE id = $1", [id]);
+    assertPermission(actor, row.owner_type, "manage");
+    const branchId = await resolveOwnerBranch(db, actor, row.owner_type, row.owner_id);
+    const next = {
+      title: input.title ?? row.title,
+      document_type: input.documentType ?? row.document_type,
+      expires_at: input.expiresAt !== undefined ? (input.expiresAt ?? null) : row.expires_at,
+    };
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    if (next.title !== row.title) changes["العنوان"] = { from: row.title, to: next.title };
+    if (next.document_type !== row.document_type) {
+      changes["نوع المستند"] = {
+        from: DOCUMENT_TYPES_AR[row.document_type] ?? row.document_type,
+        to: DOCUMENT_TYPES_AR[next.document_type] ?? next.document_type,
+      };
+    }
+    if (String(next.expires_at ?? "") !== String(row.expires_at ?? "")) {
+      changes["تاريخ الانتهاء"] = { from: row.expires_at ?? "—", to: next.expires_at ?? "—" };
+    }
+    if (Object.keys(changes).length === 0) throw new ApiError(400, "NO_CHANGES", "لا توجد تغييرات لحفظها.");
+    await db.transaction(async (tx) => {
+      await tx.query(
+        "UPDATE attachments SET title = $2, document_type = $3, expires_at = $4 WHERE id = $1",
+        [id, next.title, next.document_type, next.expires_at],
+      );
+      if (row.owner_type === "employee") {
+        await writeEmployeeHistory(tx, {
+          employeeId: row.owner_id,
+          changeType: "document_updated",
+          summary: `تحديث بيانات المستند: ${next.title || row.file_name}`,
+          details: { attachmentId: id, fileName: row.file_name, changes },
+          actorId: actor.id,
+        });
+      }
+    });
+    await writeAudit(db, logger, {
+      action: "attachment.updated",
+      actor: { id: actor.id, username: actor.username },
+      entityType: row.owner_type,
+      entityId: row.owner_id,
+      branchId,
+      severity: "info",
+      details: { attachmentId: id, fileName: row.file_name, changes },
+      ip: requestIp(req),
+      userAgent: requestUserAgent(req),
+    });
+    const updated = await db.query<AttachmentRow>(
+      `SELECT a.id, a.owner_type, a.owner_id, a.file_name, a.mime_type, a.size_bytes,
+              a.title, a.document_type, a.expires_at::text AS expires_at,
+              u.full_name AS uploaded_by_name, a.created_at
+       FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+       WHERE a.id = $1`,
+      [id],
+    );
+    const updatedRow = updated.rows[0];
+    if (!updatedRow) throw notFound("المرفق غير موجود.");
+    res.json({ attachment: presentAttachment(updatedRow) });
+  });
+
+  router.delete("/:id", async (req, res) => {
+    if (!req.auth) throw unauthorized();
+    const actor = req.auth.user;
+    const id = z.uuid("معرّف مرفق غير صالح.").parse(req.params.id);
+    const result = await db.query<Row & { owner_type: OwnerType; owner_id: string; file_name: string; title: string; document_type: string }>(
+      "SELECT owner_type, owner_id, file_name, title, document_type FROM attachments WHERE id = $1",
+      [id],
+    );
+    const row = result.rows[0];
+    if (!row) throw notFound("المرفق غير موجود.");
+    assertPermission(actor, row.owner_type, "manage");
+    const branchId = await resolveOwnerBranch(db, actor, row.owner_type, row.owner_id);
+    await db.transaction(async (tx) => {
+      await tx.query("DELETE FROM attachments WHERE id = $1", [id]);
+      if (row.owner_type === "employee") {
+        await writeEmployeeHistory(tx, {
+          employeeId: row.owner_id,
+          changeType: "document_deleted",
+          summary: `حذف مستند: ${row.title || row.file_name}`,
+          details: { attachmentId: id, fileName: row.file_name, documentType: row.document_type },
+          actorId: actor.id,
+        });
+      }
+    });
     await writeAudit(db, logger, {
       action: "attachment.deleted",
-      actor: { id: req.auth.user.id, username: req.auth.user.username },
+      actor: { id: actor.id, username: actor.username },
       entityType: row.owner_type,
       entityId: row.owner_id,
       branchId,
       severity: "warning",
-      details: { attachmentId: id, fileName: row.file_name },
+      details: { attachmentId: id, fileName: row.file_name, title: row.title },
       ip: requestIp(req),
       userAgent: requestUserAgent(req),
     });

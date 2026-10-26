@@ -54,7 +54,7 @@ export function createMetaRouter(deps: AuthDeps): Router {
       hasPermission(actor, "employees.view") ||
       hasPermission(actor, "attendance.view") ||
       hasPermission(actor, "settings.view");
-    const [branches, roles, departments, settings] = await Promise.all([
+    const [branches, roles, departments, jobTitles, settings] = await Promise.all([
       canViewBranches ? scopedBranches(actor, deps) : Promise.resolve(actor.branches as BranchMetaRow[]),
       canManageUsers
         ? listAssignableRoles(deps.db, actor)
@@ -66,6 +66,13 @@ export function createMetaRouter(deps: AuthDeps): Router {
             .query<Row & { id: string; name: string }>("SELECT id, name FROM departments WHERE active = true ORDER BY name")
             .then((result) => result.rows.map((row) => ({ id: row.id, name: row.name })))
         : Promise.resolve([] as Array<{ id: string; name: string }>),
+      canViewHr
+        ? deps.db
+            .query<Row & { id: string; name: string; department_id: string | null }>(
+              "SELECT id, name, department_id FROM job_titles WHERE active = true ORDER BY name",
+            )
+            .then((result) => result.rows.map((row) => ({ id: row.id, name: row.name, departmentId: row.department_id })))
+        : Promise.resolve([] as Array<{ id: string; name: string; departmentId: string | null }>),
       getSettings(deps.db),
     ]);
 
@@ -81,6 +88,7 @@ export function createMetaRouter(deps: AuthDeps): Router {
         active: branch.active,
       })),
       departments,
+      jobTitles,
       roles: roles.map((role) => summarizeRole(role, canManageUsers)),
       capabilities: {
         manageUsers: canManageUsers,

@@ -14,6 +14,7 @@ import { createBranchesRouter } from "./routes/branches.js";
 import { createRolesRouter } from "./routes/roles.js";
 import { createAuditRouter } from "./routes/audit.js";
 import { createDepartmentsRouter } from "./routes/departments.js";
+import { createJobTitlesRouter } from "./routes/job-titles.js";
 import { createEmployeesRouter } from "./routes/employees.js";
 import { createAttendanceRouter } from "./routes/attendance.js";
 import { createLeavesRouter } from "./routes/leaves.js";
@@ -107,6 +108,7 @@ export function createApp(deps: AuthDeps, options: AppOptions = {}): Express {
   app.use("/api/roles", createRolesRouter(deps));
   app.use("/api/audit", createAuditRouter(deps));
   app.use("/api/departments", createDepartmentsRouter(deps));
+  app.use("/api/job-titles", createJobTitlesRouter(deps));
   app.use("/api/employees", createEmployeesRouter(deps));
   app.use("/api/attendance", createAttendanceRouter(deps));
   app.use("/api/leaves", createLeavesRouter(deps));
