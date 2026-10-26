@@ -227,7 +227,7 @@ describe("BATAWIL Phase 1 API", () => {
     assert.equal(response.body.user.role.key, "admin");
     assert.equal(response.body.user.allBranches, true);
     assert.equal(response.body.user.mustChangePassword, false);
-    assert.equal(response.body.user.permissions.length, 36);
+    assert.equal(response.body.user.permissions.length, 37);
     assert.deepEqual(new Set(response.body.user.branches.map((b: { code: string }) => b.code)), new Set(["ADEN", "SANAA"]));
     assert.equal(response.body.session.remember, true);
 
@@ -434,11 +434,11 @@ describe("BATAWIL Phase 1 API", () => {
     const catalog = await adminAgent.get("/api/roles");
     assert.equal(catalog.status, 200);
     assert.equal(catalog.body.roles.length, 8);
-    assert.equal(catalog.body.permissions.length, 36);
+    assert.equal(catalog.body.permissions.length, 37);
     const adminRole = catalog.body.roles.find((role: { key: string }) => role.key === "admin");
     const employeeRole = catalog.body.roles.find((role: { key: string }) => role.key === "employee");
     assert.equal(adminRole.allPermissions, true);
-    assert.equal(adminRole.permissionKeys.length, 36);
+    assert.equal(adminRole.permissionKeys.length, 37);
     assert.deepEqual(employeeRole.permissionKeys, []);
 
     const employeeAgent = await loginAs(ctx.app, employee.username, PASSWORDS.employee);

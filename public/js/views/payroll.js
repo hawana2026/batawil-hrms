@@ -16,6 +16,7 @@ import { friendlyError, pageEnter, tablePagination } from "../ui.js";
 import {
   PAYROLL_STATUS,
   branchSelectOptions,
+  deleteRecordButton,
   filterBar,
   money,
   monthLabel,
@@ -104,13 +105,23 @@ export async function renderPayroll(host, token) {
           el(
             "td",
             { class: "no-print" },
-            caps.canManage && item.reviewStatus !== "approved"
-              ? el("button", { class: "icon-btn", type: "button", title: "تعديل المستحقات", onclick: () => editRow(item) }, icon("pencil"))
-              : el(
-                  "span",
-                  { class: "tiny muted nowrap", title: item.reviewStatus === "approved" ? "سجل معتمد ومقفل" : undefined },
-                  ...(item.reviewStatus === "approved" ? [icon("lock"), " مقفل"] : [item.generatedAt ? formatDateTime(item.generatedAt) : "—"]),
-                ),
+            el(
+              "div",
+              { class: "inline-actions" },
+              caps.canManage && item.reviewStatus !== "approved"
+                ? el("button", { class: "icon-btn", type: "button", title: "تعديل المستحقات", onclick: () => editRow(item) }, icon("pencil"))
+                : el(
+                    "span",
+                    { class: "tiny muted nowrap", title: item.reviewStatus === "approved" ? "سجل معتمد ومقفل" : undefined },
+                    ...(item.reviewStatus === "approved" ? [icon("lock"), " مقفل"] : [item.generatedAt ? formatDateTime(item.generatedAt) : "—"]),
+                  ),
+              deleteRecordButton({
+                entity: "payroll_record",
+                id: item.id,
+                label: `سجل راتب ${item.employeeName} لشهر ${monthLabel(data.year, data.month)}`,
+                onDeleted: () => renderPayroll(host, token),
+              }),
+            ),
           ),
         ),
       )

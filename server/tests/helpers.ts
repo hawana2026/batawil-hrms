@@ -122,3 +122,7 @@ export function post(agent: TestAgent, url: string, body?: string | object) {
 export function patch(agent: TestAgent, url: string, body?: string | object) {
   return agent.patch(url).set("X-Requested-With", XHR_HEADER).send(body);
 }
+
+export function del(agent: TestAgent, url: string) {
+  return agent.delete(url).set("X-Requested-With", XHR_HEADER);
+}

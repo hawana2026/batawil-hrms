@@ -18,6 +18,7 @@ import {
   toast,
 } from "../core.js";
 import { can, refreshMeta, state } from "../state.js";
+import { deleteRecordButton } from "../hr-common.js";
 import {
   actionButton,
   branchScopeTags,
@@ -173,7 +174,13 @@ function userRow(row, reload) {
         actionButton("pencil", "تعديل بيانات المستخدم", () => openUserForm(row, reload)),
         actionButton("key", "إعادة تعيين كلمة المرور", () => resetPassword(row, reload)),
         actionButton("refresh", "إنهاء جميع جلسات المستخدم", () => revokeSessions(row, reload)),
-      ];
+        deleteRecordButton({
+          entity: "user",
+          id: row.id,
+          label: `حساب المستخدم ${row.fullName} (${row.username})`,
+          onDeleted: () => reload?.(),
+        }),
+      ].filter(Boolean);
     } else if (row.isSelf) {
       actions = [el("span", { class: "tag", text: "حسابك" })];
     } else {

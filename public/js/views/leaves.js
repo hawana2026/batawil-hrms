@@ -21,6 +21,7 @@ import {
   attachmentsPanel,
   branchList,
   branchSelectOptions,
+  deleteRecordButton,
   detailRows,
   filterBar,
   openFormDialog,
@@ -147,6 +148,12 @@ export async function renderLeaves(host, token) {
               canManage && ["draft", "pending"].includes(leave.status)
                 ? el("button", { class: "icon-btn", type: "button", title: "إلغاء", onclick: (event) => cancelLeave(leave, event.currentTarget) }, icon("close"))
                 : null,
+              deleteRecordButton({
+                entity: "leave",
+                id: leave.id,
+                label: `طلب ${leaveTypeLabel(leave.leaveType)} للموظف ${leave.employeeName}`,
+                onDeleted: () => renderLeaves(host, token),
+              }),
             ),
           ),
         ),

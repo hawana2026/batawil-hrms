@@ -23,6 +23,8 @@ import {
   attTag,
   branchList,
   branchSelectOptions,
+  canDeleteRecords,
+  deleteRecord,
   downloadFile,
   filterBar,
   hashParams,
@@ -74,6 +76,7 @@ export async function renderAttendanceDaily(host, token) {
     let autosaveTimer = null;
     let savePromise = null;
     let saving = false;
+    let rowQuery = "";
 
     const summaryHost = el("div");
     const sheetStateHost = el("div");
@@ -138,6 +141,24 @@ export async function renderAttendanceDaily(host, token) {
         action("corner-up-left", "إعادة الكشف", (event) => decideSheet("reject", event?.currentTarget), "btn-ghost"),
       );
     }
+    if (submission.id && canDeleteRecords()) {
+      actionsHost.append(
+        action(
+          "trash",
+          "حذف الكشف",
+          () =>
+            deleteRecord({
+              entity: "daily_submission",
+              id: submission.id,
+              label: `كشف التحضير اليومي — ${data.branch.name} — ${formatFullDay(`${data.date}T00:00:00`)}`,
+              onDeleted: () => renderAttendanceDaily(host, token),
+            }),
+          "btn-ghost",
+          false,
+          "danger",
+        ),
+      );
+    }
 
     const printHead = printHeader({
       title: `كشف التحضير اليومي — ${data.branch.name}`,
@@ -195,6 +216,16 @@ export async function renderAttendanceDaily(host, token) {
       markDirty(null, false);
     });
 
+    const rowSearch = el("input", {
+      class: "input",
+      type: "search",
+      placeholder: "بحث بالاسم أو الرقم الوظيفي…",
+      "aria-label": "بحث في صفوف الكشف",
+      oninput: (event) => {
+        rowQuery = event.currentTarget.value.trim();
+        renderTable();
+      },
+    });
     const bulkStatus = el(
       "select",
       { class: "select", "aria-label": "حالة جماعية" },
@@ -219,6 +250,94 @@ export async function renderAttendanceDaily(host, token) {
       },
       icon("check"),
       "تطبيق على الكل",
+    );
+    const allPresentButton = el(
+      "button",
+      {
+        class: "btn btn-ghost btn-sm",
+        type: "button",
+        disabled: readOnly,
+        title: "تعيين حالة (حاضر) لكل الصفوف",
+        onclick: () => {
+          for (const row of rows) {
+            row.status = "present";
+            row.touched = true;
+          }
+          renderTable();
+          renderSummary();
+          markDirty(null, false);
+          toast("تم تعيين (حاضر) للجميع. راجع الحالات الاستثنائية ثم احفظ الكشف.", "info");
+        },
+      },
+      icon("user-check"),
+      "الكل حاضر",
+    );
+    const copyButton = el(
+      "button",
+      {
+        class: "btn btn-ghost btn-sm",
+        type: "button",
+        disabled: readOnly,
+        title: "نسخ حالات وأوقات اليوم السابق",
+        onclick: async (event) => {
+          const button = event.currentTarget;
+          const weekends = new Set(data.settings.weekendDays ?? [5, 6]);
+          const previous = new Date(`${date}T00:00:00`);
+          do {
+            previous.setDate(previous.getDate() - 1);
+          } while (weekends.has(previous.getDay()));
+          const prevISO = `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, "0")}-${String(previous.getDate()).padStart(2, "0")}`;
+          const ok = await confirmDialog({
+            title: "نسخ بيانات اليوم السابق",
+            message: `سيتم استبدال حالات وأوقات جميع صفوف هذا الكشف بما هو مسجل في ${formatFullDay(`${prevISO}T00:00:00`)}. يمكنك المراجعة قبل الحفظ.`,
+            confirmLabel: "نسخ البيانات",
+          });
+          if (!ok) return;
+          setButtonLoading(button, true, "جارٍ النسخ…");
+          try {
+            const previousData = await api(
+              `/api/attendance/daily?branchId=${encodeURIComponent(branchId)}&date=${encodeURIComponent(prevISO)}`,
+            );
+            if (!previousData.submission?.id) {
+              toast("لا يوجد كشف محفوظ لليوم السابق. أدخل التحضير يدويًا.", "warning");
+              return;
+            }
+            const byEmployee = new Map(
+              previousData.rows.filter((row) => row.employeeId).map((row) => [row.employeeId, row]),
+            );
+            let applied = 0;
+            for (const row of rows) {
+              if (!row.employeeId) continue;
+              const source = byEmployee.get(row.employeeId);
+              if (!source) continue;
+              row.status = source.status;
+              row.checkIn = source.checkIn || "";
+              row.checkOut = source.checkOut || "";
+              row.lateMinutes = Number(source.lateMinutes || 0);
+              row.workHours = Number(source.workHours || 0);
+              row.reason = source.reason || "";
+              row.notes = source.notes || "";
+              row.touched = true;
+              applied += 1;
+            }
+            renderTable();
+            renderSummary();
+            markDirty(null, false);
+            toast(
+              applied > 0
+                ? `تم نسخ ${formatNumber(applied)} صفًا من كشف اليوم السابق. راجعها ثم احفظ الكشف.`
+                : "لا توجد صفوف مشتركة قابلة للنسخ.",
+              applied > 0 ? "success" : "warning",
+            );
+          } catch (error) {
+            toast(friendlyError(error), "error");
+          } finally {
+            setButtonLoading(button, false);
+          }
+        },
+      },
+      icon("copy"),
+      "نسخ اليوم السابق",
     );
     const addManualButton = el(
       "button",
@@ -272,8 +391,11 @@ export async function renderAttendanceDaily(host, token) {
       el(
         "div",
         { class: "toolbar-group" },
+        el("div", { style: "min-width:190px; flex:1" }, rowSearch),
         bulkStatus,
         bulkButton,
+        allPresentButton,
+        copyButton,
         addManualButton,
         el("div", { style: "flex:1; min-width:170px" }, notesInput),
       ),
@@ -416,7 +538,15 @@ export async function renderAttendanceDaily(host, token) {
       const headers = ["#", "الرقم الوظيفي", "الموظف", "القسم", "الحالة", "الحضور", "الانصراف", "تأخير (د)", "ساعات العمل", "السبب", "ملاحظات"];
       if (canCorrect || canEdit) headers.push("إجراءات");
       const tbody = el("tbody");
-      rows.forEach((row, index) => {
+      const needle = rowQuery.toLowerCase();
+      const visibleRows = needle
+        ? rows.filter((row) =>
+            [row.fullName, row.manualName, row.employeeNo, row.departmentName].some((value) =>
+              String(value ?? "").toLowerCase().includes(needle),
+            ),
+          )
+        : rows;
+      visibleRows.forEach((row, index) => {
         const rowNode = el("tr", {
           class: `${row.temporary ? "row-temporary" : ""} ${row.touched ? "row-touched" : ""} ${!row.recorded && !row.touched && !row.temporary ? "row-unrecorded" : ""}`.trim(),
         });
@@ -610,8 +740,15 @@ export async function renderAttendanceDaily(host, token) {
       tableHost.replaceChildren(
         rows.length === 0
           ? el("div", { class: "empty-inline", text: "لا توجد صفوف. أضف اسماً مؤقتاً أو تحقق من بيانات موظفي الفرع." })
-          : el("div", { class: "table-wrap" }, table),
+          : visibleRows.length === 0
+            ? el("div", { class: "empty-inline", text: "لا توجد صفوف مطابقة لكلمة البحث." })
+            : el("div", { class: "table-wrap" }, table),
       );
+      if (visibleRows.length !== rows.length) {
+        tableHost.append(
+          el("div", { class: "table-note", text: `عرض ${formatNumber(visibleRows.length)} من ${formatNumber(rows.length)} صفاً. امسح البحث لعرض الكل.` }),
+        );
+      }
     }
 
     function markDirty(row, rerenderSummary = false) {

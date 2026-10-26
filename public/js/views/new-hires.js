@@ -19,6 +19,7 @@ import {
   attachmentsPanel,
   branchList,
   branchSelectOptions,
+  deleteRecordButton,
   departmentList,
   detailRows,
   filterBar,
@@ -125,6 +126,12 @@ export async function renderNewHires(host, token) {
               caps.canManage && ["draft", "pending"].includes(hire.status)
                 ? el("button", { class: "icon-btn", type: "button", title: "إلغاء", onclick: (event) => cancelHire(hire, event.currentTarget) }, icon("close"))
                 : null,
+              deleteRecordButton({
+                entity: "new_hire",
+                id: hire.id,
+                label: `طلب توظيف ${hire.fullName}`,
+                onDeleted: () => renderNewHires(host, token),
+              }),
             ),
           ),
         ),

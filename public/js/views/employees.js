@@ -21,6 +21,9 @@ import {
   attachmentsPanel,
   branchList,
   branchSelectOptions,
+  canDeleteRecords,
+  deleteRecord,
+  deleteRecordButton,
   departmentList,
   detailRows,
   downloadFile,
@@ -238,6 +241,12 @@ export async function renderEmployees(host, token) {
               canViewTransfers && !employee.archivedAt
                 ? el("button", { class: "icon-btn", type: "button", title: "طلب نقل", onclick: () => openTransfer(employee) }, icon("arrow-left-right"))
                 : null,
+              deleteRecordButton({
+                entity: "employee",
+                id: employee.id,
+                label: `ملف الموظف ${employee.fullName} (${employee.employeeNo})`,
+                onDeleted: () => renderEmployees(host, token),
+              }),
             ),
           ),
         ),
@@ -543,6 +552,20 @@ export async function renderEmployees(host, token) {
                   errorHost.replaceChildren(alertBox(friendlyError(error), "error"));
                 }
               } }, department.active ? "تعطيل" : "تفعيل"),
+              canDeleteRecords()
+                ? el("button", { class: "btn btn-ghost btn-sm danger", type: "button", onclick: async () => {
+                  await deleteRecord({
+                    entity: "department",
+                    id: department.id,
+                    label: `قسم ${department.name}`,
+                    onDeleted: async () => {
+                      const refreshed = await api("/api/departments?includeInactive=true");
+                      renderList(refreshed.items);
+                      await refreshMeta();
+                    },
+                  });
+                } }, icon("trash"), "حذف")
+                : null,
             ),
           ),
         ),

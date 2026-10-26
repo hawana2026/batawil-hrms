@@ -785,6 +785,93 @@ export function canAny(permissions) {
   return permissions.some((permission) => can(permission));
 }
 
+const DELETE_DEPENDENCY_LABELS = {
+  attendance: "سجلات حضور يومية",
+  overrides: "تعديلات تحضير شهري",
+  leaves: "طلبات إجازة",
+  advances: "طلبات سلف",
+  transfers: "طلبات تحويل",
+  new_hires: "طلبات توظيف",
+  payroll: "سجلات رواتب",
+  employees: "موظفون",
+  users: "مستخدمون",
+  submissions: "كشوف تحضير يومية",
+  monthly: "كشوف تحضير شهرية",
+  audit: "سجلات تدقيق",
+};
+
+export function deleteBlockedDetails(details) {
+  if (!details || typeof details !== "object") return [];
+  return Object.entries(DELETE_DEPENDENCY_LABELS)
+    .filter(([key]) => Number(details[key] ?? 0) > 0)
+    .map(([key, label]) => `${label}: ${formatNumber(details[key])}`);
+}
+
+export function canDeleteRecords() {
+  return can("records.delete");
+}
+
+export function deleteRecordButton({ entity, id, label, onDeleted, title = "حذف نهائي" }) {
+  if (!canDeleteRecords()) return null;
+  return el(
+    "button",
+    {
+      class: "icon-btn danger",
+      type: "button",
+      title,
+      "aria-label": title,
+      onclick: async () => {
+        const result = await deleteRecord({ entity, id, label, onDeleted });
+        return result;
+      },
+    },
+    icon("trash"),
+  );
+}
+
+export async function deleteRecord({ entity, id, label, onDeleted, successMessage = "تم الحذف نهائيًا." }) {
+  if (!canDeleteRecords()) {
+    toast("الحذف النهائي متاح لمدير النظام فقط.", "error");
+    return false;
+  }
+  const ok = await confirmDialog({
+    title: "حذف نهائي",
+    message: `سيتم حذف ${label} نهائيًا ولا يمكن التراجع عن العملية. سيُسجَّل الحذف في سجل التدقيق باسمك.`,
+    confirmLabel: "حذف نهائي",
+    danger: true,
+  });
+  if (!ok) return false;
+  try {
+    await api(`/api/admin/records/${entity}/${id}`, { method: "DELETE" });
+    toast(successMessage, "success");
+    if (typeof onDeleted === "function") await onDeleted();
+    return true;
+  } catch (error) {
+    const details = error?.details;
+    const summary = deleteBlockedDetails(details);
+    if (summary.length > 0) {
+      openModal({
+        title: "تعذر الحذف لوجود سجلات مرتبطة",
+        size: "sm",
+        body: el(
+          "div",
+          {},
+          alertBox(friendlyError(error), "error"),
+          el(
+            "ul",
+            { class: "plain-list" },
+            ...summary.map((line) => el("li", { text: line })),
+          ),
+          el("p", { class: "form-hint", text: "احذف أو أعد تصنيف السجلات المرتبطة أولًا، ثم أعد المحاولة." }),
+        ),
+      });
+    } else {
+      toast(friendlyError(error), "error");
+    }
+    return false;
+  }
+}
+
 export function todayLabel() {
   return formatDate(todayISO());
 }

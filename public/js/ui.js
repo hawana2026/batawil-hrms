@@ -123,6 +123,17 @@ const ACTION_LABELS = {
   "branch.updated": "تحديث فرع",
   "branch.activated": "تفعيل فرع",
   "branch.deactivated": "تعطيل فرع",
+  "leave.deleted": "حذف طلب إجازة نهائيًا",
+  "advance.deleted": "حذف طلب سلفة نهائيًا",
+  "transfer.deleted": "حذف طلب تحويل نهائيًا",
+  "new_hire.deleted": "حذف طلب توظيف نهائيًا",
+  "attendance_daily.deleted": "حذف كشف تحضير يومي",
+  "attendance_monthly.deleted": "حذف كشف تحضير شهري",
+  "employee.deleted": "حذف موظف نهائيًا",
+  "department.deleted": "حذف قسم نهائيًا",
+  "branch.deleted": "حذف فرع نهائيًا",
+  "payroll.deleted": "حذف سجل راتب نهائيًا",
+  "user.deleted": "حذف مستخدم نهائيًا",
   "security.permission_denied": "محاولة وصول مرفوضة",
   "setup.admin_created": "تهيئة مدير النظام",
 };
@@ -158,6 +169,11 @@ export function auditSummary(details) {
     const keys = Object.keys(details.changes);
     if (keys.length > 0) parts.push(`الحقول المتغيرة: ${keys.join("، ")}`);
   }
+  if (details.employeeName) parts.push(`الموظف: ${details.employeeName}${details.employeeNo ? ` (${details.employeeNo})` : ""}`);
+  if (details.fullName && !details.employeeName) parts.push(`الاسم: ${details.fullName}`);
+  if (details.name) parts.push(`الاسم: ${details.name}`);
+  if (details.workDate) parts.push(`التاريخ: ${details.workDate}`);
+  if (details.year && details.month) parts.push(`الشهر: ${details.month}/${details.year}`);
   if (details.roleKey) parts.push(`الدور: ${details.roleKey}`);
   if (details.code) parts.push(`الرمز: ${details.code}`);
   if (details.branches && Array.isArray(details.branches) && details.branches.length > 0) {

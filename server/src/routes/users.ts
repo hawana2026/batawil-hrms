@@ -203,6 +203,7 @@ export function createUsersRouter(deps: AuthDeps): Router {
     const scope = userScopeSql(actor, "u", 1);
     params.push(...scope.params);
     where.push(scope.sql);
+    where.push("u.deleted_at IS NULL");
 
     const addParam = (value: unknown): string => {
       params.push(value);

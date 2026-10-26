@@ -24,6 +24,8 @@ import {
   SUBMISSION_STATUS,
   branchList,
   branchSelectOptions,
+  canDeleteRecords,
+  deleteRecord,
   downloadFile,
   filterBar,
   hashParams,
@@ -135,6 +137,7 @@ async function renderSheet(host, token, params) {
   let notes = data.monthly?.notes ?? "";
   let saveTimer = null;
   let savePromise = null;
+  let rowQuery = "";
 
   const summaryHost = el("div");
   const stateHost = el("div");
@@ -149,8 +152,8 @@ async function renderSheet(host, token, params) {
   const actions = pageTitle.querySelector(".page-actions") ?? el("div");
   if (!actions.parentNode) pageTitle.append(actions);
 
-  const action = (iconName, label, handler, kind = "btn-secondary") =>
-    el("button", { class: `btn ${kind}`, type: "button", onclick: handler }, icon(iconName), label);
+  const action = (iconName, label, handler, kind = "btn-secondary", cls = "") =>
+    el("button", { class: `btn ${kind} ${cls}`.trim(), type: "button", onclick: handler }, icon(iconName), label);
 
   actions.append(
     action("printer", "طباعة A4", () => printPage({ landscape: true })),
@@ -185,6 +188,24 @@ async function renderSheet(host, token, params) {
   }
   if (canCorrect && data.monthly?.status === "approved") {
     autoSaveNode.append(el("span", { class: "tag", text: "تصحيح الصفوف يتم من كشف التحضير اليومي" }));
+  }
+  if (data.monthly?.id && canDeleteRecords()) {
+    const deleteLabel = `كشف التحضير الشهري ${monthLabel(year, month)} — ${data.branch.name}`;
+    actions.append(
+      action(
+        "trash",
+        "حذف كشف الشهر",
+        () =>
+          deleteRecord({
+            entity: "monthly_sheet",
+            id: data.monthly.id,
+            label: deleteLabel,
+            onDeleted: () => renderAttendanceMonthly(host, token),
+          }),
+        "btn-ghost",
+        "danger",
+      ),
+    );
   }
 
   const printHead = printHeader({
@@ -235,6 +256,17 @@ async function renderSheet(host, token, params) {
     markDirty();
   });
 
+  const matrixSearch = el("input", {
+    class: "input",
+    type: "search",
+    placeholder: "بحث بالاسم أو الرقم الوظيفي…",
+    "aria-label": "بحث في صفوف الشهر",
+    oninput: (event) => {
+      rowQuery = event.currentTarget.value.trim();
+      renderMatrix();
+    },
+  });
+
   const footer = el(
     "div",
     { class: "card-footer no-print" },
@@ -263,7 +295,19 @@ async function renderSheet(host, token, params) {
       printHead,
       summaryHost,
       stateHost,
-      el("div", { class: "card table-card" }, matrixHost, legend, footer),
+      el(
+        "div",
+        { class: "card table-card" },
+        el(
+          "div",
+          { class: "attendance-toolbar no-print" },
+          el("div", { class: "toolbar-group", style: "flex:1" }, el("div", { style: "min-width:220px; flex:1" }, matrixSearch)),
+          el("span", { class: "tiny muted", text: "انقر أي خلية لتجاوزها يدويًا" }),
+        ),
+        matrixHost,
+        legend,
+        footer,
+      ),
       autoSaveNode,
     ),
   );
@@ -298,7 +342,7 @@ async function renderSheet(host, token, params) {
     summaryHost.replaceChildren(
       summaryStrip([
         { label: "الموظفون", value: data.rows.filter((r) => r.employeeId).length, tone: "blue", iconName: "users" },
-        { label: "أيام مسجلة", value: totals.workdays, tone: "green", iconName: "calendar-check" },
+        { label: "أيام العمل", value: totals.workdays, tone: "green", iconName: "calendar-check" },
         { label: "حاضر", value: totals.present, tone: "green", iconName: "user-check" },
         { label: "غائب", value: totals.absent, tone: "red", iconName: "circle-x" },
         { label: "إجازات وأذونات", value: totals.leave + totals.permission, tone: "purple", iconName: "calendar" },
@@ -372,6 +416,16 @@ async function renderSheet(host, token, params) {
       matrixHost.replaceChildren(el("div", { class: "empty-inline", text: "لا توجد بيانات موظفين لهذا الشهر." }));
       return;
     }
+    const needle = rowQuery.toLowerCase();
+    const rows = needle
+      ? data.rows.filter((row) =>
+          [row.fullName, row.employeeNo, row.departmentName].some((value) => String(value ?? "").toLowerCase().includes(needle)),
+        )
+      : data.rows;
+    if (rows.length === 0) {
+      matrixHost.replaceChildren(el("div", { class: "empty-inline", text: "لا توجد صفوف مطابقة لكلمة البحث." }));
+      return;
+    }
     const date = new Date(year, month - 1, 1);
     const head = el(
       "thead",
@@ -390,7 +444,7 @@ async function renderSheet(host, token, params) {
       ),
     );
     const body = el("tbody");
-    for (const row of data.rows) {
+    for (const row of rows) {
       body.append(
         el(
           "tr",
@@ -408,6 +462,9 @@ async function renderSheet(host, token, params) {
       );
     }
     matrixHost.replaceChildren(el("div", { class: "table-wrap matrix-wrap" }, el("table", { class: "att-table matrix-table" }, head, body)));
+    if (rows.length !== data.rows.length) {
+      matrixHost.append(el("div", { class: "table-note", text: `عرض ${formatNumber(rows.length)} من ${formatNumber(data.rows.length)} موظفاً. امسح البحث لعرض الكل.` }));
+    }
   }
 
   function editCell(row, cell) {

@@ -19,6 +19,7 @@ import {
   attachmentsPanel,
   branchList,
   branchSelectOptions,
+  deleteRecordButton,
   departmentList,
   detailRows,
   filterBar,
@@ -141,6 +142,12 @@ export async function renderTransfers(host, token) {
               caps.canManage && transfer.status === "pending"
                 ? el("button", { class: "icon-btn", type: "button", title: "إلغاء", onclick: (event) => cancel(transfer, event.currentTarget) }, icon("close"))
                 : null,
+              deleteRecordButton({
+                entity: "transfer",
+                id: transfer.id,
+                label: `طلب تحويل الموظف ${transfer.employeeName}`,
+                onDeleted: () => renderTransfers(host, token),
+              }),
             ),
           ),
         ),

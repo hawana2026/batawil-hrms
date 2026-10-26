@@ -26,6 +26,7 @@ import { createReportsRouter } from "./routes/reports.js";
 import { createSettingsRouter } from "./routes/settings.js";
 import { createNotificationsRouter } from "./routes/notifications.js";
 import { createAttachmentsRouter } from "./routes/attachments.js";
+import { createAdminDeleteRouter } from "./routes/admin-delete.js";
 
 export interface AppOptions {
   publicDir?: string;
@@ -118,6 +119,7 @@ export function createApp(deps: AuthDeps, options: AppOptions = {}): Express {
   app.use("/api/settings", createSettingsRouter(deps));
   app.use("/api/notifications", createNotificationsRouter(deps));
   app.use("/api/attachments", createAttachmentsRouter(deps));
+  app.use("/api/admin", createAdminDeleteRouter(deps));
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: { code: "NOT_FOUND", message: "المسار المطلوب غير موجود." } });
   });

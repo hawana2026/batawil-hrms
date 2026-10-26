@@ -14,6 +14,7 @@ import {
 } from "../core.js";
 import { can, refreshMeta, state } from "../state.js";
 import { actionButton, friendlyError, pageEnter } from "../ui.js";
+import { canDeleteRecords, deleteRecord } from "../hr-common.js";
 
 function branchCard(branch, manage) {
   const status = branch.active
@@ -36,7 +37,21 @@ function branchCard(branch, manage) {
           el("p", {}, branch.city ? `${branch.city} · ` : "", el("span", { class: "branch-code", text: branch.code })),
         ),
       ),
-      manage ? actionButton("pencil", "تعديل بيانات الفرع", () => openBranchForm(branch, card._reload)) : null,
+      el(
+        "div",
+        { class: "inline-actions" },
+        manage ? actionButton("pencil", "تعديل بيانات الفرع", () => openBranchForm(branch, card._reload)) : null,
+        canDeleteRecords()
+          ? actionButton("trash", "حذف الفرع نهائيًا", async () => {
+              await deleteRecord({
+                entity: "branch",
+                id: branch.id,
+                label: `فرع ${branch.name} (${branch.code})`,
+                onDeleted: () => card._reload(),
+              });
+            }, { danger: true })
+          : null,
+      ),
     ),
     el("div", {}, status),
     el(

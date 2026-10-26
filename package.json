@@ -23,7 +23,7 @@
     "import:data": "tsx server/src/cli/import-data.ts",
     "cleanup:demo": "tsx server/src/cli/production-cleanup.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test --test-concurrency=1 server/tests/api.test.ts server/tests/security.test.ts server/tests/hr.test.ts"
+    "test": "tsx --test --test-concurrency=1 server/tests/api.test.ts server/tests/security.test.ts server/tests/delete.test.ts server/tests/hr.test.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.11",

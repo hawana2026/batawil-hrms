@@ -18,6 +18,7 @@ import {
   ADVANCE_STATUS,
   attachmentsPanel,
   branchSelectOptions,
+  deleteRecordButton,
   detailRows,
   filterBar,
   money,
@@ -132,6 +133,12 @@ export async function renderAdvances(host, token) {
               caps.canDisburse && advance.status === "disbursed" && advance.remaining > 0
                 ? el("button", { class: "icon-btn", type: "button", title: "تسجيل خصم", onclick: () => addDeduction(advance) }, icon("wallet"))
                 : null,
+              deleteRecordButton({
+                entity: "advance",
+                id: advance.id,
+                label: `سلفة الموظف ${advance.employeeName} بمبلغ ${money(advance.amount)}`,
+                onDeleted: () => renderAdvances(host, token),
+              }),
             ),
           ),
         );
