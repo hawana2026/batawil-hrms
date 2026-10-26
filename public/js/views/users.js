@@ -49,7 +49,7 @@ function filterForm(onApply) {
     type: "search",
     name: "q",
     value: filters.q,
-    placeholder: "الاسم، اسم المستخدم، البريد…",
+    placeholder: "الاسم، اسم المستخدم، البريد، الموظف…",
     "aria-label": "بحث في المستخدمين",
   });
   const branch = el(
@@ -158,6 +158,17 @@ function userRow(row, reload) {
         row.role.allPermissions ? el("span", { class: "tag purple", text: "صلاحيات كاملة" }) : null,
       ),
     ),
+    el(
+      "td",
+      {},
+      row.employeeName
+        ? el(
+            "div",
+            { class: "cell-person" },
+            el("div", {}, el("strong", { text: row.employeeName }), row.employeeNo ? el("span", { dir: "ltr", text: row.employeeNo }) : null),
+          )
+        : el("span", { class: "tiny muted", text: "غير مرتبط" }),
+    ),
     el("td", {}, el("div", { class: "tag-row", style: "margin-top:0" }, branchScopeTags(row, 2))),
     el("td", {}, statusBadge(status.label, status.tone, status.iconName)),
     el(
@@ -218,7 +229,7 @@ function buildTable(listHost, token, reload) {
     return card;
   }
 
-  const headers = ["المستخدم", "الدور", "نطاق الفروع", "الحالة", "آخر دخول"];
+  const headers = ["المستخدم", "الدور", "الموظف المرتبط", "نطاق الفروع", "الحالة", "آخر دخول"];
   if (can("users.manage")) headers.push("إجراءات");
 
   const table = el(
@@ -439,6 +450,34 @@ async function openUserForm(row, reload) {
   };
   roleSelect.addEventListener("change", refreshRoleNote);
 
+  let employeeOptions = [];
+  let employeeOptionsError = false;
+  try {
+    const data = await api("/api/employees/options");
+    employeeOptions = data.items ?? [];
+  } catch {
+    employeeOptionsError = true;
+  }
+  if (row?.employeeId && !employeeOptions.some((employee) => employee.id === row.employeeId)) {
+    employeeOptions.unshift({
+      id: row.employeeId,
+      fullName: row.employeeName ?? "موظف مرتبط",
+      employeeNo: row.employeeNo ?? "",
+    });
+  }
+  const employeeSelect = el(
+    "select",
+    { class: "select", id: "user-employee", name: "employeeId", disabled: employeeOptionsError && !row?.employeeId },
+    el("option", { value: "" }, employeeOptionsError ? "تعذر تحميل قائمة الموظفين" : "بدون ربط بملف موظف"),
+    ...employeeOptions.map((employee) =>
+      el(
+        "option",
+        { value: employee.id, selected: employee.id === row?.employeeId },
+        `${employee.fullName}${employee.employeeNo ? ` · ${employee.employeeNo}` : ""}`,
+      ),
+    ),
+  );
+
   const activeToggle = row
     ? el(
         "label",
@@ -534,6 +573,16 @@ async function openUserForm(row, reload) {
         el("label", { class: "form-label", for: "user-role", text: "الدور" }),
         roleSelect,
       ),
+      el(
+        "div",
+        { class: "form-field span-2" },
+        el("label", { class: "form-label", for: "user-employee", text: "ملف الموظف المرتبط" }),
+        employeeSelect,
+        el("span", {
+          class: "form-hint",
+          text: "ربط الحساب بملف موظف يتيح له استخدام بوابة الخدمة الذاتية وطلبات الإجازة الخاصة به. كل موظف يُربط بحساب واحد فقط.",
+        }),
+      ),
       activeToggle ? el("div", { class: "form-field span-2" }, activeToggle) : null,
       el(
         "div",
@@ -595,6 +644,7 @@ async function openUserForm(row, reload) {
             fullName,
             email,
             roleKey,
+            employeeId: employeeSelect.value || null,
             allBranches,
             branchIds,
           },
@@ -608,6 +658,9 @@ async function openUserForm(row, reload) {
         const body = { fullName, email: email || null };
         if (roleKey !== row.role.key) body.roleKey = roleKey;
         if (active !== row.active) body.active = active;
+        if ((employeeSelect.value || null) !== (row.employeeId ?? null)) {
+          body.employeeId = employeeSelect.value || null;
+        }
         const initialBranches = [...(row.branches ?? []).map((branch) => branch.id)].sort();
         const selectedBranches = [...branchIds].sort();
         const scopeChanged =

@@ -54,6 +54,7 @@ export interface SeedUserOptions {
   allBranches?: boolean;
   mustChangePassword?: boolean;
   active?: boolean;
+  employeeId?: string | null;
 }
 
 export interface SeededUser {
@@ -70,8 +71,8 @@ export async function seedUser(db: Db, options: SeedUserOptions): Promise<Seeded
   const passwordHash = await hashPassword(options.password);
   await db.query(
     `INSERT INTO users
-      (id, username, full_name, email, password_hash, must_change_password, role_id, active, all_branches)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      (id, username, full_name, email, password_hash, must_change_password, role_id, active, all_branches, employee_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       id,
       options.username,
@@ -82,6 +83,7 @@ export async function seedUser(db: Db, options: SeedUserOptions): Promise<Seeded
       roleId,
       options.active ?? true,
       options.allBranches ?? false,
+      options.employeeId ?? null,
     ],
   );
   for (const branchId of options.branchIds ?? []) {

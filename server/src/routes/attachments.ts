@@ -113,6 +113,37 @@ function assertPermission(actor: AuthUser, ownerType: OwnerType, action: "view" 
   if (!hasPermission(actor, OWNER_PERMISSIONS[ownerType][action])) throw forbidden();
 }
 
+async function assertOwnerAccess(
+  db: Db,
+  actor: AuthUser,
+  ownerType: OwnerType,
+  ownerId: string,
+  action: "view" | "manage",
+): Promise<string | null> {
+  if (actor.employeeId) {
+    if (ownerType === "leave") {
+      const own = await db.query<Row & { employee_id: string; branch_id: string; status: string }>(
+        "SELECT employee_id, branch_id, status FROM leave_requests WHERE id = $1",
+        [ownerId],
+      );
+      const leave = own.rows[0];
+      if (leave && leave.employee_id === actor.employeeId) {
+        if (action === "manage" && leave.status !== "draft" && leave.status !== "rejected") {
+          throw forbidden("لا يمكن تعديل مرفقات طلب أُرسل للاعتماد.");
+        }
+        return leave.branch_id;
+      }
+    }
+    if (ownerType === "employee" && ownerId === actor.employeeId) {
+      if (action === "manage") throw forbidden();
+      const own = await db.query<Row & { branch_id: string }>("SELECT branch_id FROM employees WHERE id = $1", [ownerId]);
+      if (own.rows[0]) return own.rows[0].branch_id;
+    }
+  }
+  assertPermission(actor, ownerType, action);
+  return resolveOwnerBranch(db, actor, ownerType, ownerId);
+}
+
 function presentAttachment(row: AttachmentRow) {
   return {
     id: row.id,
@@ -146,8 +177,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
   router.get("/", async (req, res) => {
     if (!req.auth) throw unauthorized();
     const query = parseBody(ownerQuerySchema, req.query);
-    assertPermission(req.auth.user, query.ownerType, "view");
-    await resolveOwnerBranch(db, req.auth.user, query.ownerType, query.ownerId);
+    await assertOwnerAccess(db, req.auth.user, query.ownerType, query.ownerId, "view");
     const result = await db.query<AttachmentRow>(
       `SELECT a.id, a.owner_type, a.owner_id, a.file_name, a.mime_type, a.size_bytes,
               a.title, a.document_type, a.expires_at::text AS expires_at,
@@ -169,8 +199,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
     );
     const row = result.rows[0];
     if (!row) throw notFound("المرفق غير موجود.");
-    assertPermission(req.auth.user, row.owner_type, "view");
-    await resolveOwnerBranch(db, req.auth.user, row.owner_type, row.owner_id);
+    await assertOwnerAccess(db, req.auth.user, row.owner_type, row.owner_id, "view");
     const content = Buffer.isBuffer(row.content) ? row.content : Buffer.from(row.content);
     res.setHeader("Content-Type", row.mime_type === "application/octet-stream" ? "application/octet-stream" : row.mime_type);
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(row.file_name)}`);
@@ -186,8 +215,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
       if (!req.auth) throw unauthorized();
       const actor = req.auth.user;
       const query = parseBody(uploadQuerySchema, req.query);
-      assertPermission(req.auth.user, query.ownerType, "manage");
-      const branchId = await resolveOwnerBranch(db, req.auth.user, query.ownerType, query.ownerId);
+      const branchId = await assertOwnerAccess(db, req.auth.user, query.ownerType, query.ownerId, "manage");
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
         throw new ApiError(400, "FILE_REQUIRED", "أرفق ملفاً صالحاً بحجم أقصى 2 ميجابايت.");
       }
@@ -257,8 +285,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
     );
     const row = result.rows[0];
     if (!row) throw notFound("المرفق غير موجود.");
-    assertPermission(actor, row.owner_type, "manage");
-    const branchId = await resolveOwnerBranch(db, actor, row.owner_type, row.owner_id);
+    const branchId = await assertOwnerAccess(db, actor, row.owner_type, row.owner_id, "manage");
     const next = {
       title: input.title ?? row.title,
       document_type: input.documentType ?? row.document_type,
@@ -325,8 +352,7 @@ export function createAttachmentsRouter(deps: AuthDeps): Router {
     );
     const row = result.rows[0];
     if (!row) throw notFound("المرفق غير موجود.");
-    assertPermission(actor, row.owner_type, "manage");
-    const branchId = await resolveOwnerBranch(db, actor, row.owner_type, row.owner_id);
+    const branchId = await assertOwnerAccess(db, actor, row.owner_type, row.owner_id, "manage");
     await db.transaction(async (tx) => {
       await tx.query("DELETE FROM attachments WHERE id = $1", [id]);
       if (row.owner_type === "employee") {

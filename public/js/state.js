@@ -2,6 +2,7 @@ import { api, toast } from "./core.js";
 
 export const ROUTES = [
   { id: "dashboard", title: "لوحة التحكم", group: "الرئيسية", icon: "dashboard", allowed: () => true },
+  { id: "self-service", title: "خدماتي", group: "الخدمة الذاتية", icon: "account", allowed: () => Boolean(state.user?.employeeId) },
   { id: "employees", title: "إدارة الموظفين", group: "الموارد البشرية", icon: "users", allowed: () => can("employees.view") },
   { id: "attendance-daily", title: "التحضير اليومي", group: "الحضور والإجازات", icon: "calendar-check", allowed: () => can("attendance.view") },
   { id: "attendance-monthly", title: "التحضير الشهري", group: "الحضور والإجازات", icon: "calendar-range", allowed: () => can("attendance.view") },
@@ -76,7 +77,11 @@ export function routeAllowed(id) {
 }
 
 export function defaultRoute() {
-  return "dashboard";
+  const user = state.user;
+  if (!user) return "dashboard";
+  const hasAdminPermissions =
+    Boolean(user.role?.allPermissions) || (Array.isArray(user.permissions) && user.permissions.length > 0);
+  return user.employeeId && !hasAdminPermissions ? "self-service" : "dashboard";
 }
 
 export function currentHashRaw() {

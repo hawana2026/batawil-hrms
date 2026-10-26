@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Row } from "../db/index.js";
 import { writeAudit } from "../lib/audit.js";
 import { ApiError, conflict, forbidden, notFound, parseBody, requestIp, requestUserAgent, unauthorized } from "../lib/errors.js";
-import { isoDateSchema, leaveSchema } from "../lib/hr-schemas.js";
+import { daysBetween, isoDateSchema, leaveSchema } from "../lib/hr-schemas.js";
 import { newId } from "../lib/ids.js";
 import { branchScopeSql, canAccessBranch } from "../services/access.js";
 import { cancelApproval, notifyPermissionHolders, openApproval } from "../services/approvals.js";
@@ -72,10 +72,6 @@ function presentLeave(row: LeaveRow) {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
-}
-
-function daysBetween(startDate: string, endDate: string): number {
-  return Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1;
 }
 
 async function logDecision(req: Request, deps: AuthDeps, outcome: Awaited<ReturnType<typeof decideLeave>>, extra: Record<string, unknown> = {}) {

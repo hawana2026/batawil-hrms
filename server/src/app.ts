@@ -19,6 +19,7 @@ import { createEmployeesRouter } from "./routes/employees.js";
 import { createAttendanceRouter } from "./routes/attendance.js";
 import { createLeavesRouter } from "./routes/leaves.js";
 import { createLeaveBalancesRouter, createLeaveTypesRouter } from "./routes/leave-types.js";
+import { createSelfServiceRouter } from "./routes/self-service.js";
 import { createTransfersRouter } from "./routes/transfers.js";
 import { createNewHiresRouter } from "./routes/new-hires.js";
 import { createAdvancesRouter } from "./routes/advances.js";
@@ -115,6 +116,7 @@ export function createApp(deps: AuthDeps, options: AppOptions = {}): Express {
   app.use("/api/leaves", createLeavesRouter(deps));
   app.use("/api/leave-types", createLeaveTypesRouter(deps));
   app.use("/api/leave-balances", createLeaveBalancesRouter(deps));
+  app.use("/api/self-service", createSelfServiceRouter(deps));
   app.use("/api/transfers", createTransfersRouter(deps));
   app.use("/api/new-hires", createNewHiresRouter(deps));
   app.use("/api/advances", createAdvancesRouter(deps));

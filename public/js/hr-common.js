@@ -322,6 +322,18 @@ function fieldControl(spec, initial) {
     input.checked = Boolean(initial ?? spec.checked ?? false);
     return { control: input, get: () => input.checked };
   }
+  if (spec.type === "file") {
+    const input = el("input", {
+      class: "input",
+      id: spec.id ?? `f-${spec.name}`,
+      name: spec.name,
+      type: "file",
+      required: spec.required,
+      disabled: spec.disabled,
+      accept: spec.accept,
+    });
+    return { control: input, get: () => input.files?.[0] ?? null };
+  }
   const input = el("input", {
     class: "input",
     id: spec.id ?? `f-${spec.name}`,

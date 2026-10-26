@@ -18,6 +18,7 @@ export interface AuthUser {
   username: string;
   fullName: string;
   email: string | null;
+  employeeId: string | null;
   role: RoleSummary;
   permissions: string[];
   allBranches: boolean;

@@ -36,6 +36,7 @@ const createUserSchema = z.object({
   fullName: fullNameSchema,
   email: emailSchema,
   roleKey: roleKeySchema,
+  employeeId: z.union([z.uuid("معرّف الموظف غير صالح."), z.literal(""), z.null()]).transform((value) => value || null).optional(),
   allBranches: z.boolean().default(false),
   branchIds: branchIdsSchema,
 });
@@ -46,6 +47,7 @@ const updateUserSchema = z
     email: emailSchema,
     roleKey: roleKeySchema.optional(),
     active: z.boolean().optional(),
+    employeeId: z.union([z.uuid("معرّف الموظف غير صالح."), z.literal(""), z.null()]).transform((value) => value || null).optional(),
     allBranches: z.boolean().optional(),
     branchIds: z.array(z.uuid("معرّف فرع غير صالح.")).max(200).optional(),
   })
@@ -58,6 +60,9 @@ interface UserListRow extends Row {
   username: string;
   full_name: string;
   email: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  employee_no: string | null;
   active: boolean;
   all_branches: boolean;
   must_change_password: boolean;
@@ -162,6 +167,34 @@ async function validateBranchSelection(
   return branches;
 }
 
+async function resolveEmployeeLink(
+  db: Db,
+  actor: AuthUser,
+  employeeId: string | null | undefined,
+  branchIds: string[],
+  allBranches: boolean,
+  excludeUserId: string | null,
+): Promise<{ id: string; full_name: string; employee_no: string; branch_id: string } | null> {
+  if (!employeeId) return null;
+  const result = await db.query<Row & { id: string; full_name: string; employee_no: string; branch_id: string; archived_at: string | Date | null }>(
+    "SELECT id, full_name, employee_no, branch_id, archived_at FROM employees WHERE id = $1",
+    [employeeId],
+  );
+  const employee = result.rows[0];
+  if (!employee) throw new ApiError(400, "INVALID_EMPLOYEE", "الموظف المحدد غير موجود.");
+  if (employee.archived_at) throw new ApiError(400, "INVALID_EMPLOYEE", "لا يمكن ربط حساب بموظف مؤرشف.");
+  const allowedBranches = allBranches && actor.allBranches ? null : new Set(branchIds);
+  if (allowedBranches && !allowedBranches.has(employee.branch_id)) {
+    throw new ApiError(400, "EMPLOYEE_BRANCH_MISMATCH", "فرع الموظف يجب أن يكون ضمن نطاق فروع المستخدم.");
+  }
+  const taken = await db.query<Row & { username: string }>(
+    "SELECT username FROM users WHERE employee_id = $1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id <> $2::uuid) LIMIT 1",
+    [employeeId, excludeUserId],
+  );
+  if (taken.rows[0]) throw conflict(`الموظف مرتبط بالفعل بحساب "${taken.rows[0].username}".`);
+  return employee;
+}
+
 async function ensureUniqueIdentity(db: Db, username: string, email: string | null, excludeUserId: string | null): Promise<void> {
   const result = await db.query<Row & { id: string; username: string; email: string | null }>(
     `SELECT id, username, email FROM users
@@ -212,7 +245,10 @@ export function createUsersRouter(deps: AuthDeps): Router {
 
     if (query.q) {
       const p = addParam(`%${query.q}%`);
-      where.push(`(u.username ILIKE ${p} OR u.full_name ILIKE ${p} OR COALESCE(u.email, '') ILIKE ${p})`);
+      where.push(
+        `(u.username ILIKE ${p} OR u.full_name ILIKE ${p} OR COALESCE(u.email, '') ILIKE ${p}
+          OR COALESCE(emp.full_name, '') ILIKE ${p} OR COALESCE(emp.employee_no, '') ILIKE ${p})`,
+      );
     }
     if (query.roleKey) {
       const p = addParam(query.roleKey);
@@ -231,13 +267,19 @@ export function createUsersRouter(deps: AuthDeps): Router {
 
     const offset = (query.page - 1) * query.pageSize;
     const countResult = await db.query<Row & { total: number }>(
-      `SELECT count(*)::int AS total FROM users u JOIN roles r ON r.id = u.role_id WHERE ${where.join(" AND ")}`,
+      `SELECT count(*)::int AS total
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN employees emp ON emp.id = u.employee_id
+       WHERE ${where.join(" AND ")}`,
       params,
     );
     const limitParam = addParam(query.pageSize);
     const offsetParam = addParam(offset);
     const rowsResult = await db.query<UserListRow>(
-      `SELECT u.id, u.username, u.full_name, u.email, u.active, u.all_branches, u.must_change_password,
+      `SELECT u.id, u.username, u.full_name, u.email, u.employee_id, emp.full_name AS employee_name,
+              emp.employee_no AS employee_no,
+              u.active, u.all_branches, u.must_change_password,
               u.locked_until, u.last_login_at, u.created_at, u.updated_at,
               r.id AS role_id, r.key AS role_key, r.name_ar AS role_name, r.all_permissions, r.sort_order,
               COALESCE((
@@ -248,6 +290,7 @@ export function createUsersRouter(deps: AuthDeps): Router {
               ), '[]'::json) AS branches
        FROM users u
        JOIN roles r ON r.id = u.role_id
+       LEFT JOIN employees emp ON emp.id = u.employee_id
        WHERE ${where.join(" AND ")}
        ORDER BY u.created_at DESC, u.username ASC
        LIMIT ${limitParam} OFFSET ${offsetParam}`,
@@ -275,6 +318,9 @@ export function createUsersRouter(deps: AuthDeps): Router {
         username: row.username,
         fullName: row.full_name,
         email: row.email,
+        employeeId: row.employee_id,
+        employeeName: row.employee_name,
+        employeeNo: row.employee_no,
         active: row.active,
         allBranches: row.all_branches,
         branches,
@@ -311,6 +357,7 @@ export function createUsersRouter(deps: AuthDeps): Router {
     const role = await assertRoleAssignable(db, actor, input.roleKey);
     const branches = await validateBranchSelection(db, actor, input.branchIds, input.allBranches);
     await ensureUniqueIdentity(db, input.username, input.email ?? null, null);
+    const employee = await resolveEmployeeLink(db, actor, input.employeeId, branches.map((branch) => branch.id), input.allBranches, null);
 
     const temporaryPassword = await nextTemporaryPassword(input.username);
     const passwordHash = await hashPassword(temporaryPassword);
@@ -319,9 +366,9 @@ export function createUsersRouter(deps: AuthDeps): Router {
     await db.transaction(async (tx) => {
       await tx.query(
         `INSERT INTO users
-          (id, username, full_name, email, password_hash, must_change_password, role_id, active, all_branches, created_by)
-         VALUES ($1, $2, $3, $4, $5, true, $6, true, $7, $8)`,
-        [userId, input.username, input.fullName, input.email ?? null, passwordHash, role.id, input.allBranches, actor.id],
+          (id, username, full_name, email, password_hash, must_change_password, role_id, active, all_branches, employee_id, created_by)
+         VALUES ($1, $2, $3, $4, $5, true, $6, true, $7, $8, $9)`,
+        [userId, input.username, input.fullName, input.email ?? null, passwordHash, role.id, input.allBranches, employee?.id ?? null, actor.id],
       );
       for (const branch of branches) {
         await tx.query("INSERT INTO user_branch_access (user_id, branch_id) VALUES ($1, $2)", [userId, branch.id]);
@@ -341,6 +388,7 @@ export function createUsersRouter(deps: AuthDeps): Router {
         allBranches: input.allBranches,
         branches: branches.map((branch) => branch.code),
         temporaryPasswordIssued: true,
+        ...(employee ? { employeeNo: employee.employee_no } : {}),
       },
       ip: requestIp(req),
       userAgent: requestUserAgent(req),
@@ -409,6 +457,13 @@ export function createUsersRouter(deps: AuthDeps): Router {
     const newEmail = input.email !== undefined ? (input.email ?? null) : target.email;
     if (newFullName !== target.fullName) changes.fullName = { from: target.fullName, to: newFullName };
     if ((newEmail ?? null) !== (target.email ?? null)) changes.email = { from: target.email, to: newEmail };
+
+    const newEmployeeId = input.employeeId !== undefined ? input.employeeId : target.employeeId;
+    if ((input.employeeId !== undefined && newEmployeeId !== target.employeeId) || changes.branches || changes.allBranches) {
+      await resolveEmployeeLink(db, actor, newEmployeeId, newBranchIds, newAllBranches, target.id);
+    }
+    if (newEmployeeId !== target.employeeId) changes.employee = { from: target.employeeId, to: newEmployeeId };
+
     if (Object.keys(changes).length === 0) throw new ApiError(400, "NO_CHANGES", "لا توجد تغييرات لحفظها.");
 
     await ensureUniqueIdentity(db, target.username, newEmail, target.id);
@@ -425,10 +480,10 @@ export function createUsersRouter(deps: AuthDeps): Router {
     await db.transaction(async (tx) => {
       await tx.query(
         `UPDATE users
-         SET full_name = $2, email = $3, role_id = $4, active = $5, all_branches = $6,
-             session_version = session_version + $7, updated_at = now()
+         SET full_name = $2, email = $3, role_id = $4, active = $5, all_branches = $6, employee_id = $7,
+             session_version = session_version + $8, updated_at = now()
          WHERE id = $1`,
-        [target.id, newFullName, newEmail, newRoleId, newActive, newAllBranches, deactivating ? 1 : 0],
+        [target.id, newFullName, newEmail, newRoleId, newActive, newAllBranches, newEmployeeId, deactivating ? 1 : 0],
       );
       if (changes.branches || changes.allBranches) {
         await tx.query("DELETE FROM user_branch_access WHERE user_id = $1", [target.id]);

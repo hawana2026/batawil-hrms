@@ -13,6 +13,7 @@ interface ManagedUserRow extends Row {
   username: string;
   full_name: string;
   email: string | null;
+  employee_id: string | null;
   role_id: string;
   active: boolean;
   all_branches: boolean;
@@ -33,6 +34,7 @@ export interface ManagedUserRecord {
   username: string;
   fullName: string;
   email: string | null;
+  employeeId: string | null;
   role: RoleRecord;
   active: boolean;
   allBranches: boolean;
@@ -47,7 +49,7 @@ export interface ManagedUserRecord {
 
 export async function getManagedUser(db: Db, id: string): Promise<ManagedUserRecord | null> {
   const result = await db.query<ManagedUserRow>(
-    `SELECT id, username, full_name, email, role_id, active, all_branches, must_change_password,
+    `SELECT id, username, full_name, email, employee_id, role_id, active, all_branches, must_change_password,
             locked_until, last_login_at, session_version, created_at, updated_at
      FROM users WHERE id = $1 AND deleted_at IS NULL`,
     [id],
@@ -62,6 +64,7 @@ export async function getManagedUser(db: Db, id: string): Promise<ManagedUserRec
     username: row.username,
     fullName: row.full_name,
     email: row.email,
+    employeeId: row.employee_id,
     role,
     active: row.active,
     allBranches: row.all_branches,

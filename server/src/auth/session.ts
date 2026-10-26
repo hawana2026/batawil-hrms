@@ -23,6 +23,7 @@ interface UserPayloadRow extends Row {
   username: string;
   full_name: string;
   email: string | null;
+  employee_id: string | null;
   must_change_password: boolean;
   active: boolean;
   all_branches: boolean;
@@ -161,7 +162,7 @@ async function loadBranches(db: Db, userId: string, allBranches: boolean): Promi
 
 export async function loadUserPayload(db: Db, userId: string): Promise<AuthUser | null> {
   const result = await db.query<UserPayloadRow>(
-    `SELECT u.id, u.username, u.full_name, u.email, u.must_change_password, u.active, u.all_branches,
+    `SELECT u.id, u.username, u.full_name, u.email, u.employee_id, u.must_change_password, u.active, u.all_branches,
             u.last_login_at, u.created_at,
             r.id AS role_id, r.key AS role_key, r.name_ar AS role_name, r.all_permissions, r.sort_order
      FROM users u
@@ -187,6 +188,7 @@ export async function loadUserPayload(db: Db, userId: string): Promise<AuthUser 
     username: row.username,
     fullName: row.full_name,
     email: row.email,
+    employeeId: row.employee_id,
     role,
     permissions,
     allBranches: row.all_branches,

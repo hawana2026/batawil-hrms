@@ -110,6 +110,7 @@ export function createMetaRouter(deps: AuthDeps): Router {
       roles: roles.map((role) => summarizeRole(role, canManageUsers)),
       capabilities: {
         manageUsers: canManageUsers,
+        selfService: Boolean(actor.employeeId),
         manageBranches: hasPermission(actor, "branches.manage") && actor.allBranches,
         viewRoles: hasPermission(actor, "roles.view") || canManageUsers,
         viewAudit: hasPermission(actor, "audit.view"),

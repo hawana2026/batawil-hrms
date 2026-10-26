@@ -42,6 +42,7 @@ import { renderNewHires } from "./views/new-hires.js";
 import { renderPayroll } from "./views/payroll.js";
 import { renderReports } from "./views/reports.js";
 import { renderRoles } from "./views/roles.js";
+import { renderSelfService } from "./views/self-service.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTransfers } from "./views/transfers.js";
 import { renderUsers } from "./views/users.js";
@@ -50,6 +51,7 @@ const appRoot = document.getElementById("app");
 
 const RENDERERS = {
   dashboard: renderDashboard,
+  "self-service": renderSelfService,
   employees: renderEmployees,
   "attendance-daily": renderAttendanceDaily,
   "attendance-monthly": renderAttendanceMonthly,
