@@ -51,7 +51,7 @@ export function createDashboardRouter(deps: AuthDeps): Router {
                 count(*) FILTER (WHERE u.active)::int AS active,
                 count(*) FILTER (WHERE u.locked_until IS NOT NULL AND u.locked_until > now())::int AS locked,
                 count(*) FILTER (WHERE u.must_change_password AND u.active)::int AS must_change
-         FROM users u WHERE ${scope.sql}`,
+         FROM users u WHERE u.deleted_at IS NULL AND ${scope.sql}`,
         scope.params,
       );
       users = result.rows[0] ?? { total: 0, active: 0, locked: 0, must_change: 0 };

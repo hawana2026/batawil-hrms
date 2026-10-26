@@ -49,7 +49,7 @@ export async function getManagedUser(db: Db, id: string): Promise<ManagedUserRec
   const result = await db.query<ManagedUserRow>(
     `SELECT id, username, full_name, email, role_id, active, all_branches, must_change_password,
             locked_until, last_login_at, session_version, created_at, updated_at
-     FROM users WHERE id = $1`,
+     FROM users WHERE id = $1 AND deleted_at IS NULL`,
     [id],
   );
   const row = result.rows[0];

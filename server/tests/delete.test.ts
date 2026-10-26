@@ -8,6 +8,7 @@ import {
   createTestContext,
   del,
   loginAs,
+  patch,
   seedUser,
   XHR_HEADER,
   type SeededUser,
@@ -198,6 +199,8 @@ describe("Administrative record deletion", () => {
       .set("X-Requested-With", XHR_HEADER)
       .send({ username: target.username, password: target.password });
     assert.equal(loginAttempt.status, 401);
+    const revivalAttempt = await patch(adminAgent, `/api/users/${target.id}`, { active: true });
+    assert.equal(revivalAttempt.status, 404);
     assert.equal(await countAudit(ctx.db, "user.deleted"), 1);
   });
 });
