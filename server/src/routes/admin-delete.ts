@@ -377,7 +377,6 @@ export function createAdminDeleteRouter(deps: AuthDeps): Router {
             transfers: number;
             new_hires: number;
             payroll: number;
-            audit: number;
           }
         >(
           `SELECT (SELECT count(*)::int FROM employees WHERE branch_id = $1) AS employees,
@@ -388,8 +387,7 @@ export function createAdminDeleteRouter(deps: AuthDeps): Router {
                   (SELECT count(*)::int FROM advance_requests WHERE branch_id = $1) AS advances,
                   (SELECT count(*)::int FROM employee_transfers WHERE from_branch_id = $1 OR to_branch_id = $1) AS transfers,
                   (SELECT count(*)::int FROM new_employee_requests WHERE branch_id = $1) AS new_hires,
-                  (SELECT count(*)::int FROM payroll_records WHERE branch_id = $1) AS payroll,
-                  (SELECT count(*)::int FROM audit_logs WHERE branch_id = $1) AS audit`,
+                  (SELECT count(*)::int FROM payroll_records WHERE branch_id = $1) AS payroll`,
           [id],
         )
       ).rows[0];

@@ -156,8 +156,16 @@ describe("Administrative record deletion", () => {
     assert.equal(blocked.status, 409);
     assert.ok(blocked.body.error.details.employees > 0);
 
+    await ctx.db.query(
+      "INSERT INTO audit_logs (action, entity_type, entity_id, branch_id, severity) VALUES ('branch.probe', 'branch', $1, $2, 'info')",
+      [emptyBranch.id, emptyBranch.id],
+    );
     const branchDeleted = await del(adminAgent, `/api/admin/records/branch/${emptyBranch.id}`);
     assert.equal(branchDeleted.status, 200);
+    const branchAudit = await ctx.db.query<{ branch_id: string }>(
+      "SELECT branch_id FROM audit_logs WHERE action = 'branch.probe'",
+    );
+    assert.equal(branchAudit.rows[0]?.branch_id, emptyBranch.id);
 
     const departmentDeleted = await del(adminAgent, `/api/admin/records/department/${departmentId}`);
     assert.equal(departmentDeleted.status, 200);

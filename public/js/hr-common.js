@@ -797,7 +797,6 @@ const DELETE_DEPENDENCY_LABELS = {
   users: "مستخدمون",
   submissions: "كشوف تحضير يومية",
   monthly: "كشوف تحضير شهرية",
-  audit: "سجلات تدقيق",
 };
 
 export function deleteBlockedDetails(details) {
