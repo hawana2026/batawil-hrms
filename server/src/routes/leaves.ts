@@ -9,6 +9,7 @@ import { branchScopeSql, canAccessBranch } from "../services/access.js";
 import { cancelApproval, notifyPermissionHolders, openApproval } from "../services/approvals.js";
 import { decideLeave } from "../services/decisions.js";
 import { loadEmployee } from "../services/employees.js";
+import { resolveLeaveType } from "../services/leave-balances.js";
 import { createRequireAuth, createRequirePermission, requirePasswordReady, type AuthDeps } from "../middleware/auth.js";
 
 const listQuerySchema = z.object({
@@ -31,6 +32,7 @@ interface LeaveRow extends Row {
   branch_id: string;
   branch_name: string;
   leave_type: string;
+  leave_type_name: string | null;
   start_date: string;
   end_date: string;
   days: number;
@@ -55,6 +57,7 @@ function presentLeave(row: LeaveRow) {
     branchId: row.branch_id,
     branchName: row.branch_name,
     leaveType: row.leave_type,
+    leaveTypeName: row.leave_type_name ?? row.leave_type,
     startDate: row.start_date,
     endDate: row.end_date,
     days: row.days,
@@ -127,13 +130,14 @@ export function createLeavesRouter(deps: AuthDeps): Router {
     const offset = add((query.page - 1) * query.pageSize);
     const result = await db.query<LeaveRow>(
       `SELECT l.id, l.employee_id, e.employee_no, e.full_name AS employee_name, l.branch_id, b.name AS branch_name,
-              l.leave_type, l.start_date::text AS start_date, l.end_date::text AS end_date, l.days, l.reason, l.notes, l.status,
+              l.leave_type, t.name AS leave_type_name, l.start_date::text AS start_date, l.end_date::text AS end_date, l.days, l.reason, l.notes, l.status,
               ru.full_name AS requested_by_name, du.full_name AS decided_by_name, l.decided_at, l.decision_note,
               (SELECT count(*)::int FROM attachments a WHERE a.owner_type = 'leave' AND a.owner_id = l.id) AS attachments_count,
               l.created_at, l.updated_at
        FROM leave_requests l
        JOIN employees e ON e.id = l.employee_id
        JOIN branches b ON b.id = l.branch_id
+       LEFT JOIN leave_types t ON t.id = l.leave_type_id
        LEFT JOIN users ru ON ru.id = l.requested_by
        LEFT JOIN users du ON du.id = l.decided_by
        WHERE ${where.join(" AND ")}
@@ -174,12 +178,14 @@ export function createLeavesRouter(deps: AuthDeps): Router {
       [input.employeeId, input.startDate, input.endDate],
     );
     if (overlap.rows[0]) throw conflict("يوجد طلب إجازة أو إذن متداخل لنفس الموظف.");
+    const leaveType = await resolveLeaveType(db, input.leaveTypeId, input.leaveType);
+    if (!leaveType.active) throw new ApiError(400, "LEAVE_TYPE_INACTIVE", "نوع الإجازة معطّل ولا يمكن اختياره.");
     const id = newId();
     await db.query(
       `INSERT INTO leave_requests
-        (id, employee_id, branch_id, leave_type, start_date, end_date, days, reason, notes, status, requested_by)
-       VALUES ($1,$2,$3,$4,$5::date,$6::date,$7,$8,$9,'draft',$10)`,
-      [id, input.employeeId, employee.branch_id, input.leaveType, input.startDate, input.endDate, days, input.reason, input.notes, actor.id],
+        (id, employee_id, branch_id, leave_type, leave_type_id, start_date, end_date, days, reason, notes, status, requested_by)
+       VALUES ($1,$2,$3,$4,$5,$6::date,$7::date,$8,$9,$10,'draft',$11)`,
+      [id, input.employeeId, employee.branch_id, leaveType.code, leaveType.id, input.startDate, input.endDate, days, input.reason, input.notes, actor.id],
     );
     await writeAudit(db, logger, {
       action: "leave.created",
@@ -188,7 +194,7 @@ export function createLeavesRouter(deps: AuthDeps): Router {
       entityId: id,
       branchId: employee.branch_id,
       severity: "info",
-      details: { employee: employee.full_name, type: input.leaveType, startDate: input.startDate, endDate: input.endDate, days },
+      details: { employee: employee.full_name, type: leaveType.name, startDate: input.startDate, endDate: input.endDate, days },
       ip: requestIp(req),
       userAgent: requestUserAgent(req),
     });
@@ -218,9 +224,11 @@ export function createLeavesRouter(deps: AuthDeps): Router {
       [input.employeeId, id, input.startDate, input.endDate],
     );
     if (overlap.rows[0]) throw conflict("يوجد طلب إجازة أو إذن متداخل لنفس الموظف.");
+    const leaveType = await resolveLeaveType(db, input.leaveTypeId, input.leaveType);
+    if (!leaveType.active) throw new ApiError(400, "LEAVE_TYPE_INACTIVE", "نوع الإجازة معطّل ولا يمكن اختياره.");
     await db.query(
-      `UPDATE leave_requests SET leave_type=$2, start_date=$3::date, end_date=$4::date, days=$5, reason=$6, notes=$7, updated_at=now() WHERE id=$1`,
-      [id, input.leaveType, input.startDate, input.endDate, days, input.reason, input.notes],
+      `UPDATE leave_requests SET leave_type=$2, leave_type_id=$3, start_date=$4::date, end_date=$5::date, days=$6, reason=$7, notes=$8, updated_at=now() WHERE id=$1`,
+      [id, leaveType.code, leaveType.id, input.startDate, input.endDate, days, input.reason, input.notes],
     );
     await writeAudit(db, logger, {
       action: "leave.updated",
@@ -229,7 +237,7 @@ export function createLeavesRouter(deps: AuthDeps): Router {
       entityId: id,
       branchId: leave.branch_id,
       severity: "info",
-      details: { type: input.leaveType, startDate: input.startDate, endDate: input.endDate, days },
+      details: { type: leaveType.name, startDate: input.startDate, endDate: input.endDate, days },
       ip: requestIp(req),
       userAgent: requestUserAgent(req),
     });
@@ -240,22 +248,33 @@ export function createLeavesRouter(deps: AuthDeps): Router {
     if (!req.auth) throw unauthorized();
     const actor = req.auth.user;
     const id = z.uuid("معرّف طلب غير صالح.").parse(req.params.id);
-    const result = await db.query<Row & { status: string; branch_id: string; employee_name: string; leave_type: string; start_date: string; end_date: string; days: number }>(
+    const result = await db.query<Row & { status: string; branch_id: string; employee_name: string; leave_type: string; type_name: string | null; type_code: string | null; requires_document: boolean | null; start_date: string; end_date: string; days: number }>(
       `SELECT l.status, l.branch_id, e.full_name AS employee_name, l.leave_type,
+              t.name AS type_name, t.code AS type_code, t.requires_document,
               l.start_date::text AS start_date, l.end_date::text AS end_date, l.days
-       FROM leave_requests l JOIN employees e ON e.id = l.employee_id WHERE l.id = $1`,
+       FROM leave_requests l
+       JOIN employees e ON e.id = l.employee_id
+       LEFT JOIN leave_types t ON t.id = l.leave_type_id
+       WHERE l.id = $1`,
       [id],
     );
     const leave = result.rows[0];
     if (!leave) throw notFound("الطلب غير موجود.");
     if (!canAccessBranch(actor, leave.branch_id)) throw notFound("الطلب غير موجود أو خارج نطاق صلاحيتك.");
     if (leave.status !== "draft" && leave.status !== "rejected") throw conflict("لا يمكن إرسال طلب في هذه الحالة.");
+    if (leave.requires_document) {
+      const attachments = await db.query<Row & { total: number }>(
+        "SELECT count(*)::int AS total FROM attachments WHERE owner_type = 'leave' AND owner_id = $1",
+        [id],
+      );
+      if ((attachments.rows[0]?.total ?? 0) < 1) throw new ApiError(400, "DOCUMENT_REQUIRED", "هذا النوع يتطلب إرفاق مستند قبل الإرسال للاعتماد.");
+    }
     await db.query("UPDATE leave_requests SET status='pending', updated_at=now() WHERE id=$1", [id]);
     await openApproval(db, {
       entityType: "leave",
       entityId: id,
       branchId: leave.branch_id,
-      title: `${leave.leave_type === "permission" ? "إذن" : "إجازة"} — ${leave.employee_name}`,
+      title: `${leave.type_name ?? leave.leave_type} — ${leave.employee_name}`,
       summary: `${leave.start_date} إلى ${leave.end_date} (${leave.days} يوم)`,
       requestedBy: actor.id,
     });
@@ -264,7 +283,7 @@ export function createLeavesRouter(deps: AuthDeps): Router {
       "leaves.approve",
       leave.branch_id,
       "طلب إجازة بانتظار الاعتماد",
-      `${actor.fullName} أرسل طلب ${leave.leave_type === "permission" ? "إذن" : "إجازة"} للموظف ${leave.employee_name}.`,
+      `${actor.fullName} أرسل طلب ${leave.type_name ?? leave.leave_type} للموظف ${leave.employee_name}.`,
       "#/approvals",
     );
     await writeAudit(db, logger, {

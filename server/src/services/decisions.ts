@@ -3,6 +3,7 @@ import { ApiError, conflict, forbidden, notFound } from "../lib/errors.js";
 import { newId } from "../lib/ids.js";
 import { closeApproval, notifyPermissionHolders, notifyUser, openApproval } from "./approvals.js";
 import { applyDueTransfers, nextEmployeeNo } from "./employees.js";
+import { consumeLeaveBalance, resolveLeaveType } from "./leave-balances.js";
 
 export interface DecisionActor {
   id: string;
@@ -143,14 +144,16 @@ export async function decideLeave(
       branch_id: string;
       branch_name: string;
       leave_type: string;
+      leave_type_id: string | null;
       start_date: string;
       end_date: string;
+      days: number;
       status: string;
       requested_by: string | null;
     }
   >(
     `SELECT l.id, l.employee_id, e.full_name AS employee_name, l.branch_id, b.name AS branch_name,
-            l.leave_type, l.start_date::text AS start_date, l.end_date::text AS end_date, l.status, l.requested_by
+            l.leave_type, l.leave_type_id, l.start_date::text AS start_date, l.end_date::text AS end_date, l.days, l.status, l.requested_by
      FROM leave_requests l
      JOIN employees e ON e.id = l.employee_id
      JOIN branches b ON b.id = l.branch_id
@@ -161,7 +164,20 @@ export async function decideLeave(
   if (!leave) throw notFound("طلب الإجازة غير موجود.");
   if (leave.status !== "pending") throw conflict("لا يمكن اعتماد طلب ليس قيد المراجعة.");
   let linkedDayRows = 0;
+  let balanceRemaining: number | null = null;
   await db.transaction(async (tx) => {
+    if (decision === "approved") {
+      const type = await resolveLeaveType(tx, leave.leave_type_id, leave.leave_type);
+      const balance = await consumeLeaveBalance(tx, {
+        leaveId,
+        employeeId: leave.employee_id,
+        type,
+        startDate: leave.start_date,
+        days: leave.days,
+        actorId: actor.id,
+      });
+      balanceRemaining = balance.remaining;
+    }
     await tx.query(
       `UPDATE leave_requests SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4, updated_at = now() WHERE id = $1`,
       [leaveId, decision, actor.id, reason],
@@ -201,7 +217,7 @@ export async function decideLeave(
     entityId: leaveId,
     requesterId: leave.requested_by,
     summary: `إجازة ${leave.employee_name}: ${leave.start_date} → ${leave.end_date}`,
-    details: { employee: leave.employee_name, linkedAttendanceRows: linkedDayRows, reason: reason ?? undefined },
+    details: { employee: leave.employee_name, linkedAttendanceRows: linkedDayRows, balanceRemaining, reason: reason ?? undefined },
   };
 }
 

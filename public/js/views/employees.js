@@ -144,6 +144,7 @@ const HISTORY_TYPES = {
   document_updated: "تعديل مستند",
   document_deleted: "حذف مستند",
 };
+const BALANCE_KINDS = { usage: "خصم إجازة", adjustment: "تعديل رصيد", opening: "رصيد افتتاحي", restore: "استعادة رصيد" };
 
 export async function renderEmployees(host, token) {
   const query = state.employees ?? {
@@ -835,11 +836,122 @@ export async function renderEmployees(host, token) {
       );
     };
 
+    const buildLeavesTab = () => {
+      const employee = detail.employee;
+      const canAdjust = can("leaves.manage") && !employee.archivedAt;
+      const currentYear = new Date().getFullYear();
+      const yearSelect = el(
+        "select",
+        { class: "select" },
+        ...[currentYear, currentYear - 1, currentYear - 2].map((year) => el("option", { value: String(year), selected: year === currentYear }, String(year))),
+      );
+      const bodyHost = el("div");
+
+      const openAdjust = (balance) => {
+        openFormDialog({
+          title: `تعديل رصيد ${balance.name} — ${employee.fullName}`,
+          description: "القيمة الموجبة تزيد الرصيد والسالية تخفضه. يُسجل التعديل في حركات الرصيد مع السبب.",
+          fields: [
+            { name: "days", label: "عدد الأيام (±)", type: "number", required: true, min: -366, max: 366, step: "1", value: 1 },
+            { name: "note", label: "سبب التعديل", type: "textarea", required: true, minlength: 3, maxlength: 500, span: 2 },
+          ],
+          submitLabel: "حفظ التعديل",
+          onSubmit: async (values) => {
+            await api("/api/leave-balances/adjust", {
+              method: "POST",
+              body: {
+                employeeId: employee.id,
+                leaveTypeId: balance.leaveTypeId,
+                year: Number(yearSelect.value),
+                days: Number(values.days),
+                note: values.note,
+              },
+            });
+            toast("تم تعديل رصيد الإجازة.", "success");
+            await load();
+          },
+        });
+      };
+
+      const render = (data) => {
+        const balances = data.balances ?? [];
+        const movements = data.movements ?? [];
+        const table = balances.length
+          ? el(
+              "table",
+              { class: "att-table" },
+              el("thead", {}, el("tr", {}, ...["النوع", "الاستحقاق", "المستخدم", "التعديل", "المتبقي", canAdjust ? "إجراء" : ""].filter(Boolean).map((label) => el("th", { text: label })))),
+              el(
+                "tbody",
+                {},
+                ...balances.map((balance) =>
+                  el(
+                    "tr",
+                    {},
+                    el("td", {}, el("strong", { text: balance.name }), balance.paid ? null : el("span", { class: "tiny muted", text: " · بدون راتب" })),
+                    el("td", { class: "num", text: formatNumber(balance.entitlement) }),
+                    el("td", { class: "num", text: formatNumber(balance.used) }),
+                    el("td", { class: "num", text: formatNumber(balance.adjusted) }),
+                    el("td", {}, el("strong", { class: balance.remaining > 0 ? "text-success" : "text-danger", text: formatNumber(balance.remaining) })),
+                    canAdjust ? el("td", {}, el("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: () => openAdjust(balance) }, icon("pencil"), "تعديل")) : null,
+                  ),
+                ),
+              ),
+            )
+          : el("p", { class: "tiny muted", text: "لا توجد أرصدة إجازات مسجلة لهذا العام." });
+        const movementList = movements.length
+          ? el(
+              "div",
+              { class: "stack-sm", style: "margin-top:14px" },
+              el("h3", { class: "section-title" }, icon("scroll"), "حركات الرصيد"),
+              ...movements.map((movement) =>
+                el(
+                  "div",
+                  { class: "attachment-item" },
+                  icon("calendar"),
+                  el(
+                    "div",
+                    { class: "attachment-copy" },
+                    el("strong", { text: `${BALANCE_KINDS[movement.kind] ?? movement.kind} · ${formatNumber(movement.days)} يوم` }),
+                    el("span", { text: `${movement.note || "—"} · ${movement.actor} · ${formatDateTime(movement.createdAt)}` }),
+                  ),
+                ),
+              ),
+            )
+          : null;
+        bodyHost.replaceChildren(el("div", {}, table, movementList));
+      };
+
+      const load = async () => {
+        bodyHost.replaceChildren(loadingBlock("جارٍ تحميل أرصدة الإجازات…"));
+        try {
+          const data = await api(`/api/leave-balances?employeeId=${encodeURIComponent(employee.id)}&year=${yearSelect.value}`);
+          render(data);
+        } catch (error) {
+          bodyHost.replaceChildren(alertBox(friendlyError(error), "error"));
+        }
+      };
+      yearSelect.addEventListener("change", load);
+      load();
+      return el(
+        "div",
+        {},
+        el(
+          "div",
+          { class: "section-head" },
+          el("h3", { class: "section-title" }, icon("calendar"), "أرصدة الإجازات"),
+          el("div", { class: "inline-actions" }, yearSelect),
+        ),
+        bodyHost,
+      );
+    };
+
     const TAB_LABELS = [
       ["data", "البيانات الأساسية", "user-check"],
       ["contracts", "العقود", "calendar"],
       ["documents", "المستندات", "file-text"],
       ["history", "السجل الوظيفي", "scroll"],
+      ["leaves", "الإجازات", "calendar"],
       ["transfers", "التحويلات", "arrow-left-right"],
     ];
 
@@ -869,9 +981,11 @@ export async function renderEmployees(host, token) {
             ? buildDocumentsTab()
             : activeTab === "history"
               ? buildHistoryTab()
-              : activeTab === "transfers"
-                ? buildTransfersTab()
-                : buildDataTab();
+              : activeTab === "leaves"
+                ? buildLeavesTab()
+                : activeTab === "transfers"
+                  ? buildTransfersTab()
+                  : buildDataTab();
       contentHost.replaceChildren(content);
       const title = tabsHost.parentElement?.querySelector?.(".modal-title");
       if (title) title.textContent = `ملف الموظف — ${employee.fullName}`;

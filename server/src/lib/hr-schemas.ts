@@ -183,10 +183,41 @@ export const monthlySubmitSchema = z.object({
   note: z.string().trim().max(1000).default(""),
 });
 
+export const leaveTypeSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(2, "رمز النوع مطلوب.")
+    .max(40)
+    .regex(/^[a-z][a-z0-9_]{1,39}$/, "الرمز يجب أن يبدأ بحرف إنجليزي ويحتوي حروفاً صغيرة وأرقاماً وشرطات سفلية فقط."),
+  name: z.string().trim().min(2, "اسم النوع مطلوب.").max(120),
+  annualEntitlement: z.coerce.number().min(0).max(366).default(0),
+  paid: z.boolean().default(true),
+  trackBalance: z.boolean().default(true),
+  requiresDocument: z.boolean().default(false),
+  active: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().min(0).max(9999).default(0),
+});
+
+export const leaveTypeUpdateSchema = leaveTypeSchema.partial();
+
+export const leaveBalanceAdjustSchema = z.object({
+  employeeId: z.uuid("معرّف الموظف غير صالح."),
+  leaveTypeId: z.uuid("نوع الإجازة غير صالح."),
+  year: z.coerce.number().int().min(2000).max(2100),
+  days: z.coerce
+    .number()
+    .min(-366)
+    .max(366)
+    .refine((value) => value !== 0, "قيمة التعديل يجب ألا تكون صفراً."),
+  note: z.string().trim().min(3, "سبب التعديل مطلوب.").max(500),
+});
+
 export const leaveSchema = z
   .object({
     employeeId: z.uuid("يجب اختيار موظف صالح."),
-    leaveType: z.enum(["annual", "sick", "unpaid", "emergency", "permission", "other"]),
+    leaveTypeId: z.union([z.uuid("نوع الإجازة غير صالح."), z.literal("")]).transform((value) => value || null).optional(),
+    leaveType: z.string().trim().min(2).max(40).optional(),
     startDate: isoDateSchema,
     endDate: isoDateSchema,
     reason: z.string().trim().max(1000).default(""),

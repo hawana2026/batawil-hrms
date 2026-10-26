@@ -53,8 +53,9 @@ export function createMetaRouter(deps: AuthDeps): Router {
     const canViewHr =
       hasPermission(actor, "employees.view") ||
       hasPermission(actor, "attendance.view") ||
+      hasPermission(actor, "leaves.view") ||
       hasPermission(actor, "settings.view");
-    const [branches, roles, departments, jobTitles, settings] = await Promise.all([
+    const [branches, roles, departments, jobTitles, leaveTypes, settings] = await Promise.all([
       canViewBranches ? scopedBranches(actor, deps) : Promise.resolve(actor.branches as BranchMetaRow[]),
       canManageUsers
         ? listAssignableRoles(deps.db, actor)
@@ -73,6 +74,22 @@ export function createMetaRouter(deps: AuthDeps): Router {
             )
             .then((result) => result.rows.map((row) => ({ id: row.id, name: row.name, departmentId: row.department_id })))
         : Promise.resolve([] as Array<{ id: string; name: string; departmentId: string | null }>),
+      canViewHr
+        ? deps.db
+            .query<Row & { id: string; code: string; name: string; annual_entitlement: string | number; paid: boolean; track_balance: boolean }>(
+              "SELECT id, code, name, annual_entitlement, paid, track_balance FROM leave_types WHERE active = true ORDER BY sort_order, name",
+            )
+            .then((result) =>
+              result.rows.map((row) => ({
+                id: row.id,
+                code: row.code,
+                name: row.name,
+                annualEntitlement: Number(row.annual_entitlement),
+                paid: row.paid,
+                trackBalance: row.track_balance,
+              })),
+            )
+        : Promise.resolve([] as Array<{ id: string; code: string; name: string; annualEntitlement: number; paid: boolean; trackBalance: boolean }>),
       getSettings(deps.db),
     ]);
 
@@ -89,6 +106,7 @@ export function createMetaRouter(deps: AuthDeps): Router {
       })),
       departments,
       jobTitles,
+      leaveTypes,
       roles: roles.map((role) => summarizeRole(role, canManageUsers)),
       capabilities: {
         manageUsers: canManageUsers,
